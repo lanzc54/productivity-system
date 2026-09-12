@@ -7,6 +7,7 @@ import re
 import secrets
 import sqlite3
 from datetime import date, timedelta
+import time
 from functools import wraps
 
 from flask import Flask, redirect, render_template_string, request, session, url_for
@@ -18,6 +19,13 @@ try:
 except Exception:
     psycopg2 = None
     RealDictCursor = None
+
+try:
+    from flask_session import Session
+    import redis as _redis
+except Exception:
+    Session = None
+    _redis = None
 
 
 class PostgresRow(dict):
@@ -87,6 +95,25 @@ app.config.update(
     SESSION_COOKIE_SAMESITE="Lax",
     SESSION_COOKIE_SECURE=os.environ.get("PRODUCTIVITY_COOKIE_SECURE", "false").lower() == "true",
 )
+# Server-side session configuration (Redis preferred, filesystem fallback)
+REDIS_URL = os.environ.get("REDIS_URL")
+if Session and _redis:
+    if REDIS_URL:
+        try:
+            redis_client = _redis.from_url(REDIS_URL)
+            app.config["SESSION_TYPE"] = "redis"
+            app.config["SESSION_REDIS"] = redis_client
+        except Exception:
+            app.config["SESSION_TYPE"] = "filesystem"
+    else:
+        app.config["SESSION_TYPE"] = "filesystem"
+else:
+    app.config["SESSION_TYPE"] = "filesystem"
+
+app.config["SESSION_PERMANENT"] = True
+app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=int(os.environ.get("SESSION_MAX_AGE_DAYS", "1")))
+if Session:
+    Session(app)
 DB_PATH = os.environ.get("PRODUCTIVITY_DB", os.path.join(os.path.dirname(__file__), "productivity.db"))
 MD_PER_SLOT = 0.125
 
@@ -168,32 +195,6 @@ def engagement_base_code(code):
         return f"{parts[0]}-NAPP-{parts[2]}"
     return code
 
-
-class PostgresConnection:
-    def __init__(self, connection):
-        self.connection = connection
-
-    def execute(self, sql, params=()):
-        sql = sql.replace("?", "%s")
-        sql = sql.replace("INSERT OR IGNORE INTO", "INSERT INTO")
-        cur = self.connection.cursor(cursor_factory=RealDictCursor)
-        cur.execute(sql, params)
-        return cur
-
-    def executemany(self, sql, params):
-        sql = sql.replace("?", "%s")
-        sql = sql.replace("INSERT OR IGNORE INTO", "INSERT INTO")
-        cur = self.connection.cursor(cursor_factory=RealDictCursor)
-        cur.executemany(sql, params)
-        return cur
-
-    def commit(self):
-        self.connection.commit()
-
-    def close(self):
-        self.connection.close()
-
-
 def db():
     resource_url = os.environ.get("DATABASE_URL") or os.environ.get("PRODUCTIVITY_DB") or ""
     if resource_url.startswith("postgres") and psycopg2:
@@ -237,6 +238,7 @@ def init_db():
         CREATE TABLE IF NOT EXISTS codes (code TEXT NOT NULL, description TEXT NOT NULL, kind TEXT NOT NULL, year INTEGER NOT NULL DEFAULT 2026, annual_budget REAL, auditor_budget REAL, PRIMARY KEY (code, kind, year));
         CREATE TABLE IF NOT EXISTS entries (auditor TEXT NOT NULL, work_date TEXT NOT NULL, slot TEXT NOT NULL, code TEXT NOT NULL, PRIMARY KEY (auditor, work_date, slot));
         CREATE TABLE IF NOT EXISTS engagement_assignments (code TEXT NOT NULL, year INTEGER NOT NULL, auditor TEXT NOT NULL, budget_md REAL, PRIMARY KEY (code, year, auditor));
+        CREATE TABLE IF NOT EXISTS sessions (sid TEXT PRIMARY KEY, username TEXT NOT NULL, ua TEXT, ip TEXT, created_at INTEGER, last_active INTEGER, revoked INTEGER DEFAULT 0);
     """)
     code_columns = connection.execute("PRAGMA table_info(codes)").fetchall()
     primary_key_columns = [column["name"] for column in code_columns if column["pk"]]
@@ -274,6 +276,51 @@ def enforce_csrf():
     token = request.form.get("csrf_token")
     if token != session.get("csrf_token"):
         return "Invalid or missing CSRF token.", 400
+    return None
+
+
+@app.before_request
+def session_hardening():
+    # skip for static, login, logout, health endpoints
+    if request.path.startswith("/static") or request.endpoint in ("login", "logout", "health"):
+        return None
+    if "username" not in session:
+        return None
+    ua = request.headers.get('User-Agent', '')[:512]
+    ip = request.remote_addr
+    # UA/IP enforcement controlled by env vars
+    if os.environ.get("ENFORCE_SESSION_UA", "true").lower() == "true" and session.get('ua') and session.get('ua') != ua:
+        session.clear()
+        return redirect(url_for('login'))
+    if os.environ.get("ENFORCE_SESSION_IP", "false").lower() == "true" and session.get('ip') and session.get('ip') != ip:
+        session.clear()
+        return redirect(url_for('login'))
+    now = int(time.time())
+    max_idle = int(os.environ.get("SESSION_MAX_IDLE_SECS", str(60 * 60 * 8)))
+    max_age = int(os.environ.get("SESSION_MAX_AGE_SECS", str(60 * 60 * 24)))
+    if session.get('last_active') and now - int(session['last_active']) > max_idle:
+        session.clear()
+        return redirect(url_for('login'))
+    if session.get('created_at') and now - int(session['created_at']) > max_age:
+        session.clear()
+        return redirect(url_for('login'))
+    session['last_active'] = now
+    # update DB metadata and enforce revocation flag
+    sid = session.get('sid')
+    if sid:
+        try:
+            conn = db()
+            # check revoked
+            row = conn.execute("SELECT revoked FROM sessions WHERE sid=?", (sid,)).fetchone()
+            if row and row.get('revoked'):
+                conn.close()
+                session.clear()
+                return redirect(url_for('login'))
+            conn.execute("INSERT OR REPLACE INTO sessions(sid, username, ua, ip, created_at, last_active, revoked) VALUES (?, ?, ?, ?, ?, ?, COALESCE((SELECT revoked FROM sessions WHERE sid=?), 0))", (sid, session.get('username'), session.get('ua'), session.get('ip'), session.get('created_at'), now, sid))
+            conn.commit()
+            conn.close()
+        except Exception:
+            pass
     return None
 
 
@@ -326,7 +373,25 @@ def login():
         password = request.form.get("password", "")
         account = db().execute("SELECT * FROM accounts WHERE lower(username)=lower(?)", (username,)).fetchone()
         if account and password_matches(account["password_hash"], password):
-            session.update(username=account["username"], role=account["role"], auditor=account["auditor"])
+            # establish server-side session and bind to client
+            sid = secrets.token_hex(16)
+            session['sid'] = sid
+            session['username'] = account["username"]
+            session['role'] = account["role"]
+            session['auditor'] = account["auditor"]
+            session['ua'] = request.headers.get('User-Agent', '')[:512]
+            session['ip'] = request.remote_addr
+            now = int(time.time())
+            session['created_at'] = now
+            session['last_active'] = now
+            # persist metadata to DB for admin UI and revocation
+            try:
+                conn = db()
+                conn.execute("INSERT OR REPLACE INTO sessions(sid, username, ua, ip, created_at, last_active, revoked) VALUES (?, ?, ?, ?, ?, ?, 0)", (sid, session['username'], session['ua'], session['ip'], now, now))
+                conn.commit()
+                conn.close()
+            except Exception:
+                pass
             return redirect(url_for("home"))
         error = "Incorrect username or password."
     return render_template_string("""<style>:root{--ink:#142b35;--muted:#5f7074;--teal:#07564f;--coral:#e56d50}*{box-sizing:border-box}body{font:14px/1.5 system-ui,sans-serif;background:#f5f7f4;color:var(--ink);margin:0;border-top:7px solid var(--teal)}.login{max-width:410px;margin:90px auto;padding:30px;background:#fff;border:1px solid #d9e1df;border-radius:16px;box-shadow:0 14px 35px rgba(20,43,53,.08)}.login-brand{text-align:center}.brand-img{display:block;width:90px;height:90px;object-fit:contain;border-radius:50%;box-shadow:0 3px 8px rgba(20,43,53,.2);background:#fff;padding:3px;margin:0 auto 8px}.eyebrow{color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.08em;text-align:center}.login-title{font-size:24px;margin:12px 0 0;text-align:center}.login-subtitle{color:var(--muted);text-align:center;margin:10px 0 8px}.login-form{text-align:left}.login-form label{display:block;color:var(--muted);font-size:12px;font-weight:700;margin:15px 0 6px}login-form label:first-child{margin-top:0}.login-form input{font:inherit;width:100%;padding:10px;border:1px solid #c8d4d1;border-radius:8px}.login-form button{font:inherit;width:100%;padding:10px;margin-top:20px;border:0;border-radius:8px;background:var(--teal);color:#fff;font-weight:700}.error{color:#b23f2d}.login-logo{display:block;max-width:90px;margin:0 auto;}.login-brand h1{text-align:center}</style><div class='login'><div class='login-brand'><img class='brand-img' src='{{ url_for("static", filename="logo.png") }}' alt='IA Productivity System'></div><div class='eyebrow'>IT Audit Operations</div><h1 class='login-title'>IA Productivity System</h1><p class='login-subtitle'>Sign in to your productivity workspace.</p><p class='error'>{{ error }}</p><form class='login-form' method='post'><input type='hidden' name='csrf_token' value='{{ csrf_token }}'><label>Username</label><input name='username' autofocus><label>Password</label><input name='password' type='password'><button>Log in</button></form></div>""", error=error, csrf_token=generate_csrf_token())
@@ -334,6 +399,16 @@ def login():
 
 @app.get("/logout")
 def logout():
+    # mark session revoked in DB (if present)
+    sid = session.get('sid')
+    if sid:
+        try:
+            conn = db()
+            conn.execute("UPDATE sessions SET revoked=1 WHERE sid=?", (sid,))
+            conn.commit()
+            conn.close()
+        except Exception:
+            pass
     session.clear()
     return redirect(url_for("login"))
 
@@ -599,6 +674,40 @@ def accounts_page():
     rows = "".join(f"<tr><td>{a['username']}</td><td>{a['role']}</td><td>{a['auditor'] or '-'}</td><td><form id='account-{a['username']}' class='account-edit' method='post' action='{url_for('update_account', username=a['username'])}'>{csrf_field()}<input name='password' type='password' placeholder='New password'><select name='role'><option {'selected' if a['role'] == 'auditor' else ''}>auditor</option><option {'selected' if a['role'] == 'admin' else ''}>admin</option><input name='auditor' value='{a['auditor']}' placeholder='Auditor'></form></td><td><div class='account-actions'><button class='btn' form='account-{a['username']}'>Save</button>{'' if a['username'] == session.get('username') else f"<button class='btn danger' form='account-{a['username']}' formaction='{url_for('delete_account', username=a['username'])}'>Delete</button>"}</div></td></tr>" for a in accounts)
     content = f"<div class='card'><h2>Accounts</h2><form class='module-form' method='post' action='{url_for('add_account')}'>{csrf_field()}<label>Username<input name='username' placeholder='Username' required></label><label>Password<input name='password' type='password' placeholder='Password' required></label><label>Role<select name='role'><option>auditor</option><option>admin</option></select></label><label>Auditor initials<input name='auditor' placeholder='Auditor initials'></label><button class='btn'>Add account</button></form><table class='accounts-table'><tr><th>Username</th><th>Role</th><th>Auditor</th><th>Edit</th><th>Actions</th></tr>{rows}</table></div>"
     return render(content)
+
+
+@app.get("/admin/sessions")
+@admin_only
+def admin_sessions():
+    connection = db()
+    rows = connection.execute("SELECT sid, username, ua, ip, created_at, last_active, revoked FROM sessions ORDER BY last_active DESC").fetchall()
+    body = ""
+    for r in rows:
+        sid = escape(r['sid'])
+        username = escape(r['username'])
+        ua = escape(r.get('ua') or '-')
+        ip = escape(r.get('ip') or '-')
+        created = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(int(r['created_at']))) if r.get('created_at') else '-'
+        last = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(int(r['last_active']))) if r.get('last_active') else '-'
+        revoked = 'Yes' if r.get('revoked') else 'No'
+        body += f"<tr><td>{username}</td><td>{sid}</td><td>{created}</td><td>{last}</td><td>{ip}</td><td>{ua}</td><td>{revoked}</td><td><form method='post' action='{url_for('revoke_session')}'><input type='hidden' name='sid' value='{sid}'>{csrf_field()}<button class='btn danger'>Revoke</button></form></td></tr>"
+    content = f"<div class='card'><h2>Active Sessions</h2><p class='muted'>List of sessions (revoked sessions are marked). Revoke forces logout on next request.</p><div class='grid'><table><tr><th>User</th><th>SID</th><th>Created</th><th>Last active</th><th>IP</th><th>User-Agent</th><th>Revoked</th><th>Action</th></tr>{body}</table></div></div>"
+    return render(content)
+
+
+@app.post('/admin/sessions/revoke')
+@admin_only
+def revoke_session():
+    sid = request.form.get('sid')
+    username = request.form.get('username')
+    connection = db()
+    if sid:
+        connection.execute("UPDATE sessions SET revoked=1 WHERE sid=?", (sid,))
+    elif username:
+        connection.execute("UPDATE sessions SET revoked=1 WHERE username=?", (username,))
+    connection.commit()
+    connection.close()
+    return redirect(url_for('admin_sessions'))
 
 
 @app.post("/accounts")
