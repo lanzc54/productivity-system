@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: productivity-system
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app
+    envVars:
+      - key: PRODUCTIVITY_SECRET
+        generateValue: true
+      - key: PRODUCTIVITY_HOST
+        value: 0.0.0.0
+      - key: PRODUCTIVITY_PORT
+        value: 10000
+      - key: PRODUCTIVITY_DEBUG
+        value: false
+      - key: PRODUCTIVITY_COOKIE_SECURE
+        value: true
