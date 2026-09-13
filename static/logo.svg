@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 220 220" role="img" aria-label="IA Productivity System logo">
+  <defs>
+    <linearGradient id="bg" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0%" stop-color="#0d2f3d"/>
+      <stop offset="100%" stop-color="#0b6e64"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0%" stop-color="#f7b267"/>
+      <stop offset="100%" stop-color="#ee6c4d"/>
+    </linearGradient>
+  </defs>
+  <rect x="10" y="10" width="200" height="200" rx="44" fill="url(#bg)"/>
+  <path d="M58 150V72h58c20 0 34 12 34 31 0 20-14 31-34 31H81v16h77v18H58zm23-40h29c11 0 17-6 17-15s-6-15-17-15H81v30z" fill="#fff"/>
+  <path d="M123 58h36l25 42 24-42h25l-42 68v34h-22v-34l-46-68z" fill="url(#accent)"/>
+</svg>

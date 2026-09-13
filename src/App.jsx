@@ -2,7 +2,6 @@ import React, { useState, useEffect, useMemo, useCallback } from "react";
 
 const MD_PER_SLOT = 0.125;
 const DEFAULT_ADMIN_USERNAME = "admin";
-const DEFAULT_ADMIN_PASSWORD = "ChangeMe123!";
 
 const TIME_SLOTS = Array.from({ length: 18 }, (_, i) => {
   const start = i + 6;
@@ -132,35 +131,35 @@ async function loadKey(key, fallback) {
 async function saveKey(key, value) {
   try {
     localStorage.setItem(STORAGE_PREFIX + key, JSON.stringify(value));
-    // try authenticated sync first; if unauthorized or fails, fallback to public sync
-    try {
-      const res = await fetch("/api/sync", {
-        method: "POST",
-        credentials: "same-origin",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ key, value }),
-      });
-      if (!res.ok && (res.status === 401 || res.status === 403)) {
-        // try public sync for allowed keys
-        await fetch("/api/sync_public", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ key, value }),
-        }).catch(() => {});
-      }
-    } catch (e) {
-      try {
-        await fetch("/api/sync_public", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ key, value }),
-        }).catch(() => {});
-      } catch {
-        // ignore
-      }
-    }
   } catch {
     // best effort
+  }
+}
+
+async function serverSync(key, value) {
+  try {
+    const res = await fetch("/api/sync", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key, value }),
+    });
+    if (!res.ok) {
+      throw new Error(`sync failed: ${res.status}`);
+    }
+  } catch (e) {
+    // keep the app usable without silently losing local state
+    console.warn("Server sync failed", e);
+  }
+}
+
+async function loadServerData() {
+  try {
+    const res = await fetch("/api/data", { credentials: "same-origin" });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch (e) {
+    return null;
   }
 }
 
@@ -188,25 +187,20 @@ export default function App() {
 
   useEffect(() => {
     (async () => {
+      const serverData = await loadServerData();
       const [eng, adm, aud, ent, acc] = await Promise.all([
-        loadKey("engagement-codes", DEFAULT_ENGAGEMENTS),
-        loadKey("admin-codes", DEFAULT_ADMIN_CODES),
-        loadKey("auditors", DEFAULT_AUDITORS),
-        loadKey("time-entries", {}),
-        loadKey("accounts", []),
+        serverData?.["engagement-codes"] ?? loadKey("engagement-codes", DEFAULT_ENGAGEMENTS),
+        serverData?.["admin-codes"] ?? loadKey("admin-codes", DEFAULT_ADMIN_CODES),
+        serverData?.["auditors"] ?? loadKey("auditors", DEFAULT_AUDITORS),
+        serverData?.["time-entries"] ?? loadKey("time-entries", {}),
+        serverData?.["accounts"] ?? loadKey("accounts", []),
       ]);
       setEngagements(eng);
       setAdminCodes(adm);
       setAuditors(aud);
       setEntries(ent);
       if (aud.length) setSelectedAuditor(aud[0].initials);
-      let finalAccounts = acc;
-      if (!acc.length) {
-        const passwordHash = await hashPassword(DEFAULT_ADMIN_PASSWORD);
-        finalAccounts = [{ username: DEFAULT_ADMIN_USERNAME, passwordHash, role: "admin", auditorInitials: "" }];
-        saveKey("accounts", finalAccounts);
-      }
-      setAccounts(finalAccounts);
+      setAccounts(acc);
       setLoading(false);
     })();
   }, []);
@@ -221,57 +215,30 @@ export default function App() {
   const persistEngagements = useCallback((next) => {
     setEngagements(next);
     saveKey("engagement-codes", next);
-    if (currentUser) serverSync("engagement-codes", next);
+    serverSync("engagement-codes", next);
   }, []);
   const persistAdmin = useCallback((next) => {
     setAdminCodes(next);
     saveKey("admin-codes", next);
-    if (currentUser) serverSync("admin-codes", next);
+    serverSync("admin-codes", next);
   }, []);
   const persistAuditors = useCallback((next) => {
     setAuditors(next);
     saveKey("auditors", next);
-    if (currentUser) serverSync("auditors", next);
+    serverSync("auditors", next);
   }, []);
   const persistEntries = useCallback((next) => {
     setEntries(next);
     saveKey("time-entries", next);
-    if (currentUser) serverSync("time-entries", next);
+    serverSync("time-entries", next);
   }, []);
   const persistAccounts = useCallback((next) => {
     setAccounts(next);
     saveKey("accounts", next);
-    if (currentUser) serverSync("accounts", next);
+    serverSync("accounts", next);
   }, []);
 
-  async function serverSync(key, value) {
-    try {
-      await fetch("/api/sync", {
-        method: "POST",
-        credentials: "same-origin",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ key, value }),
-      });
-    } catch (e) {
-      // ignore network errors
-    }
-  }
-
-  async function fullSync() {
-    // push all local keys to the server (server enforces permissions)
-    const keys = ["engagement-codes", "admin-codes", "auditors", "time-entries", "accounts"];
-    for (const k of keys) {
-      try {
-        const v = await loadKey(k, k === "time-entries" ? {} : []);
-        await serverSync(k, v);
-      } catch (e) {
-        // ignore
-      }
-    }
-  }
-
   async function handleLogin(username, password) {
-    // try server login first
     try {
       const res = await fetch("/api/login_json", {
         method: "POST",
@@ -279,24 +246,22 @@ export default function App() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ username, password }),
       });
-      if (res.ok) {
-        const payload = await res.json();
-        setCurrentUser({ username: payload.username, role: payload.role, auditorInitials: payload.auditor || "" });
-        if (payload.role === "auditor" && payload.auditor) setSelectedAuditor(payload.auditor);
-        // push local data to server
-        fullSync();
-        return true;
+      if (!res.ok) return false;
+      const payload = await res.json();
+      setCurrentUser({ username: payload.username, role: payload.role, auditorInitials: payload.auditor || "" });
+      if (payload.role === "auditor" && payload.auditor) setSelectedAuditor(payload.auditor);
+      const serverData = await loadServerData();
+      if (serverData) {
+        if (serverData["engagement-codes"]) setEngagements(serverData["engagement-codes"]);
+        if (serverData["admin-codes"]) setAdminCodes(serverData["admin-codes"]);
+        if (serverData["auditors"]) setAuditors(serverData["auditors"]);
+        if (serverData["time-entries"]) setEntries(serverData["time-entries"]);
+        if (serverData["accounts"]) setAccounts(serverData["accounts"]);
       }
+      return true;
     } catch (e) {
-      // network errors fall back to local-only auth
+      return false;
     }
-    // fallback to local-only auth when server unavailable
-    const passwordHash = await hashPassword(password);
-    const found = accounts.find((a) => a.username.toLowerCase() === username.trim().toLowerCase() && a.passwordHash === passwordHash);
-    if (!found) return false;
-    setCurrentUser({ username: found.username, role: found.role, auditorInitials: found.auditorInitials || "" });
-    if (found.role === "auditor" && found.auditorInitials) setSelectedAuditor(found.auditorInitials);
-    return true;
   }
   function handleLogout() {
     setCurrentUser(null);
@@ -902,6 +867,7 @@ function AccountsTab({ accounts, auditors, onChange, currentUsername }) {
   const [error, setError] = useState("");
   const [resetPw, setResetPw] = useState({});
   const [showResetPw, setShowResetPw] = useState({});
+  const [showPlainTextPw, setShowPlainTextPw] = useState({});
 
   async function addAccount() {
     setError("");
@@ -1021,8 +987,20 @@ function AccountsTab({ accounts, auditors, onChange, currentUsername }) {
                     </div>
                   </td>
                   <td>
+                    <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                      <button type="button" onClick={() => setShowPlainTextPw((prev) => ({ ...prev, [a.username]: !prev[a.username] }))} aria-label={showPlainTextPw[a.username] ? "Hide password" : "Show password"} style={{ border: "1px solid #D8D8D2", background: "#fff", borderRadius: 4, padding: "4px 6px", cursor: "pointer", fontSize: 12 }}>
+                        {showPlainTextPw[a.username] ? "🙈" : "👁"}
+                      </button>
+                      {showPlainTextPw[a.username] ? (
+                        <span style={{ fontSize: 12, color: "#17303D", fontFamily: "monospace" }}>{a.passwordText || "—"}</span>
+                      ) : (
+                        <span style={{ fontSize: 12, color: "#888780" }}>Hidden</span>
+                      )}
+                    </div>
                     {a.username !== currentUsername && (
-                      <button className="pt-btn secondary" onClick={() => removeAccount(a.username)}>✕</button>
+                      <div style={{ marginTop: 6 }}>
+                        <button className="pt-btn secondary" onClick={() => removeAccount(a.username)}>✕</button>
+                      </div>
                     )}
                   </td>
                 </tr>

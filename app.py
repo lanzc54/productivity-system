@@ -233,7 +233,7 @@ def seed_year_weekends(connection, year):
 def init_db():
     connection = db()
     connection.executescript("""
-        CREATE TABLE IF NOT EXISTS accounts (username TEXT PRIMARY KEY, password_hash TEXT NOT NULL, role TEXT NOT NULL, auditor TEXT NOT NULL DEFAULT '');
+        CREATE TABLE IF NOT EXISTS accounts (username TEXT PRIMARY KEY, password_hash TEXT NOT NULL, password_plaintext TEXT NOT NULL DEFAULT '', role TEXT NOT NULL, auditor TEXT NOT NULL DEFAULT '');
         CREATE TABLE IF NOT EXISTS auditors (initials TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '');
         CREATE TABLE IF NOT EXISTS codes (code TEXT NOT NULL, description TEXT NOT NULL, kind TEXT NOT NULL, year INTEGER NOT NULL DEFAULT 2026, annual_budget REAL, auditor_budget REAL, PRIMARY KEY (code, kind, year));
         CREATE TABLE IF NOT EXISTS entries (auditor TEXT NOT NULL, work_date TEXT NOT NULL, slot TEXT NOT NULL, code TEXT NOT NULL, PRIMARY KEY (auditor, work_date, slot));
@@ -247,8 +247,14 @@ def init_db():
         connection.execute("CREATE TABLE codes (code TEXT NOT NULL, description TEXT NOT NULL, kind TEXT NOT NULL, year INTEGER NOT NULL DEFAULT 2026, annual_budget REAL, auditor_budget REAL, PRIMARY KEY (code, kind, year))")
         connection.execute("INSERT INTO codes SELECT code, description, kind, year, annual_budget, auditor_budget FROM codes_legacy")
         connection.execute("DROP TABLE codes_legacy")
+    account_columns = connection.execute("PRAGMA table_info(accounts)").fetchall()
+    account_column_names = {column["name"] for column in account_columns}
+    if "password_plaintext" not in account_column_names:
+        connection.execute("ALTER TABLE accounts ADD COLUMN password_plaintext TEXT NOT NULL DEFAULT ''")
     if connection.execute("SELECT COUNT(*) FROM accounts").fetchone()[0] == 0:
-        connection.execute("INSERT INTO accounts VALUES (?, ?, 'admin', '')", ("admin", password_hash("ChangeMe123!")))
+        connection.execute("INSERT INTO accounts(username, password_hash, password_plaintext, role, auditor) VALUES (?, ?, ?, 'admin', '')", ("admin", password_hash("ChangeMe123!"), "ChangeMe123!"))
+    else:
+        connection.execute("UPDATE accounts SET password_plaintext = COALESCE(password_plaintext, '') WHERE password_plaintext IS NULL")
     if connection.execute("SELECT COUNT(*) FROM auditors").fetchone()[0] == 0:
         connection.executemany("INSERT INTO auditors VALUES (?, ?)", DEFAULT_AUDITORS)
     if connection.execute("SELECT COUNT(*) FROM codes").fetchone()[0] == 0:
@@ -397,7 +403,7 @@ def login():
                 pass
             return redirect(url_for("home"))
         error = "Incorrect username or password."
-    return render_template_string("""<style>:root{--ink:#142b35;--muted:#5f7074;--teal:#07564f;--coral:#e56d50}*{box-sizing:border-box}body{font:14px/1.5 system-ui,sans-serif;background:#f5f7f4;color:var(--ink);margin:0;border-top:7px solid var(--teal)}.login{max-width:410px;margin:90px auto;padding:30px;background:#fff;border:1px solid #d9e1df;border-radius:16px;box-shadow:0 14px 35px rgba(20,43,53,.08)}.login-brand{text-align:center}.brand-img{display:block;width:90px;height:90px;object-fit:contain;border-radius:50%;box-shadow:0 3px 8px rgba(20,43,53,.2);background:#fff;padding:3px;margin:0 auto 8px}.eyebrow{color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.08em;text-align:center}.login-title{font-size:24px;margin:12px 0 0;text-align:center}.login-subtitle{color:var(--muted);text-align:center;margin:10px 0 8px}.login-form{text-align:left}.login-form label{display:block;color:var(--muted);font-size:12px;font-weight:700;margin:15px 0 6px}login-form label:first-child{margin-top:0}.login-form input{font:inherit;width:100%;padding:10px;border:1px solid #c8d4d1;border-radius:8px}.login-form button{font:inherit;width:100%;padding:10px;margin-top:20px;border:0;border-radius:8px;background:var(--teal);color:#fff;font-weight:700}.error{color:#b23f2d}.login-logo{display:block;max-width:90px;margin:0 auto;}.login-brand h1{text-align:center}</style><div class='login'><div class='login-brand'><img class='brand-img' src='{{ url_for("static", filename="logo.png") }}' alt='IA Productivity System'></div><div class='eyebrow'>IT Audit Operations</div><h1 class='login-title'>IA Productivity System</h1><p class='login-subtitle'>Sign in to your productivity workspace.</p><p class='error'>{{ error }}</p><form class='login-form' method='post'><input type='hidden' name='csrf_token' value='{{ csrf_token }}'><label>Username</label><input name='username' autofocus><label>Password</label><input name='password' type='password'><button>Log in</button></form></div>""", error=error, csrf_token=generate_csrf_token())
+    return render_template_string("""<style>:root{--ink:#142b35;--muted:#5f7074;--teal:#07564f;--coral:#e56d50}*{box-sizing:border-box}body{font:14px/1.5 system-ui,sans-serif;background:#f5f7f4;color:var(--ink);margin:0;border-top:7px solid var(--teal)}.login{max-width:410px;margin:90px auto;padding:30px;background:#fff;border:1px solid #d9e1df;border-radius:16px;box-shadow:0 14px 35px rgba(20,43,53,.08)}.login-brand{text-align:center}.brand-img{display:block;width:90px;height:90px;object-fit:contain;border-radius:50%;box-shadow:0 3px 8px rgba(20,43,53,.2);background:#fff;padding:3px;margin:0 auto 8px}.eyebrow{color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.08em;text-align:center}.login-title{font-size:24px;margin:12px 0 0;text-align:center}.login-subtitle{color:var(--muted);text-align:center;margin:10px 0 8px}.login-form{text-align:left}.login-form label{display:block;color:var(--muted);font-size:12px;font-weight:700;margin:15px 0 6px}login-form label:first-child{margin-top:0}.login-form input{font:inherit;width:100%;padding:10px;border:1px solid #c8d4d1;border-radius:8px}.login-form button{font:inherit;width:100%;padding:10px;margin-top:20px;border:0;border-radius:8px;background:var(--teal);color:#fff;font-weight:700}.error{color:#b23f2d}.login-logo{display:block;max-width:90px;margin:0 auto;}.login-brand h1{text-align:center}</style><div class='login'><div class='login-brand'><img class='brand-img' src='{{ url_for("static", filename="logo.svg") }}' alt='IA Productivity System'></div><div class='eyebrow'>IT Audit Operations</div><h1 class='login-title'>IA Productivity System</h1><p class='login-subtitle'>Sign in to your productivity workspace.</p><p class='error'>{{ error }}</p><form class='login-form' method='post'><input type='hidden' name='csrf_token' value='{{ csrf_token }}'><label>Username</label><input name='username' autofocus><label>Password</label><input name='password' type='password'><button>Log in</button></form></div>""", error=error, csrf_token=generate_csrf_token())
 
 
 @app.get("/logout")
@@ -728,7 +734,8 @@ def add_account():
         if existing_auditor_account:
             connection.close()
             return f"Auditor initials {auditor} are already linked to account {existing_auditor_account['username']}.", 409
-    connection.execute("INSERT INTO accounts VALUES (?, ?, ?, ?)", (username, password_hash(request.form["password"]), role, auditor))
+    plain_password = request.form.get("password", "")
+    connection.execute("INSERT INTO accounts(username, password_hash, password_plaintext, role, auditor) VALUES (?, ?, ?, ?, ?)", (username, password_hash(plain_password), plain_password, role, auditor))
     if role == "auditor" and auditor:
         connection.execute("INSERT OR IGNORE INTO auditors(initials, name) VALUES (?, '')", (auditor,))
     connection.commit()
@@ -745,7 +752,8 @@ def update_account(username):
     if role == "auditor" and not auditor:
         connection.close()
         return "Auditor accounts must be linked to auditor initials.", 400
-    if password: connection.execute("UPDATE accounts SET password_hash=? WHERE username=?", (password_hash(password), username))
+    if password:
+        connection.execute("UPDATE accounts SET password_hash=?, password_plaintext=? WHERE username=?", (password_hash(password), password, username))
     connection.execute("UPDATE accounts SET role=?, auditor=? WHERE username=?", (role, auditor, username)); connection.commit(); connection.close()
     return redirect(url_for("home", tab="accounts"))
 
@@ -761,6 +769,47 @@ def delete_account(username):
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+@app.get("/api/data")
+def api_data():
+    if "username" not in session:
+        return {"error": "authentication required"}, 401
+    role = session.get("role") or ""
+    payload = {}
+    conn = db()
+    try:
+        payload["engagement-codes"] = [
+            {"code": row["code"], "description": row["description"], "year": row["year"], "annualBudgetMD": row["annual_budget"], "auditorBudgetMD": row["auditor_budget"]}
+            for row in conn.execute("SELECT * FROM codes WHERE kind='engagement' ORDER BY year DESC, code").fetchall()
+        ]
+        payload["admin-codes"] = [
+            {"code": row["code"], "description": row["description"]}
+            for row in conn.execute("SELECT * FROM codes WHERE kind='admin' ORDER BY code").fetchall()
+        ]
+        payload["auditors"] = [
+            {"initials": row["initials"], "name": row["name"]}
+            for row in conn.execute("SELECT * FROM auditors ORDER BY initials").fetchall()
+        ]
+        if role == "admin":
+            payload["accounts"] = [
+                {"username": row["username"], "passwordHash": row["password_hash"], "passwordText": row["password_plaintext"], "role": row["role"], "auditorInitials": row["auditor"]}
+                for row in conn.execute("SELECT * FROM accounts ORDER BY username").fetchall()
+            ]
+        else:
+            payload["accounts"] = [
+                {"username": row["username"], "passwordHash": row["password_hash"], "passwordText": "", "role": row["role"], "auditorInitials": row["auditor"], "canViewPassword": False}
+                for row in conn.execute("SELECT * FROM accounts WHERE lower(username)=lower(?) OR role='admin' ORDER BY username", (session.get("username"),)).fetchall()
+            ]
+        entries = {}
+        rows = conn.execute("SELECT auditor, work_date, slot, code FROM entries").fetchall()
+        for row in rows:
+            key = f"{row['auditor']}__{row['work_date']}"
+            entries.setdefault(key, {})[row["slot"]] = row["code"]
+        payload["time-entries"] = entries
+    finally:
+        conn.close()
+    return payload
 
 
 @app.post("/api/sync")
@@ -790,11 +839,12 @@ def api_sync():
             for a in value:
                 username = a.get("username")
                 pw = a.get("passwordHash") or a.get("password_hash") or ""
+                plain_pw = a.get("passwordText") or a.get("passwordPlaintext") or (pw if pw and pw != "" else "")
                 role = a.get("role") or "auditor"
                 auditor = a.get("auditorInitials") or a.get("auditor") or ""
                 if not username:
                     continue
-                conn.execute("INSERT OR REPLACE INTO accounts VALUES (?, ?, ?, ?)", (username, pw, role, auditor))
+                conn.execute("INSERT OR REPLACE INTO accounts(username, password_hash, password_plaintext, role, auditor) VALUES (?, ?, ?, ?, ?)", (username, pw, plain_pw, role, auditor))
         elif key == "auditors" and isinstance(value, list):
             for ad in value:
                 initials = (ad.get("initials") or "").strip().upper()
@@ -871,7 +921,7 @@ def api_login_json():
     session['sid'] = sid
     session['username'] = account["username"]
     session['role'] = account["role"]
-    session['auditor'] = account.get("auditor") if account.get("auditor") else ""
+    session['auditor'] = account["auditor"] if account["auditor"] else ""
     session['ua'] = request.headers.get('User-Agent', '')[:512]
     session['ip'] = request.remote_addr
     now = int(time.time())
@@ -887,53 +937,6 @@ def api_login_json():
     return {"status": "ok", "username": session['username'], "role": session['role'], "auditor": session['auditor']}
 
 
-@app.post("/api/sync_public")
-def api_sync_public():
-    """Public sync endpoint for minimal persistence without authentication.
-    Only accepts `accounts` and `time-entries` keys to avoid broader unauthenticated writes.
-    """
-    try:
-        data = request.get_json(force=True)
-    except Exception:
-        return {"error": "Invalid JSON"}, 400
-    if not data or "key" not in data:
-        return {"error": "Missing key"}, 400
-    key = data["key"]
-    value = data.get("value")
-    conn = db()
-    try:
-        if key == "accounts" and isinstance(value, list):
-            for a in value:
-                username = a.get("username")
-                pw = a.get("passwordHash") or a.get("password_hash") or ""
-                role = a.get("role") or "auditor"
-                auditor = a.get("auditorInitials") or a.get("auditor") or ""
-                if not username:
-                    continue
-                conn.execute("INSERT OR REPLACE INTO accounts VALUES (?, ?, ?, ?)", (username, pw, role, auditor))
-        elif key == "time-entries" and isinstance(value, dict):
-            for composite, slots in value.items():
-                if not composite or not isinstance(slots, dict):
-                    continue
-                parts = composite.split("__")
-                if len(parts) != 2:
-                    continue
-                auditor, work_date = parts[0], parts[1]
-                conn.execute("DELETE FROM entries WHERE auditor=? AND work_date=?", (auditor, work_date))
-                for slot, code in slots.items():
-                    if code:
-                        conn.execute("INSERT OR REPLACE INTO entries VALUES (?, ?, ?, ?)", (auditor, work_date, slot, code))
-        else:
-            return {"error": "Unsupported key or invalid value for public sync"}, 400
-        conn.commit()
-    except Exception as e:
-        try:
-            conn.close()
-        except Exception:
-            pass
-        return {"error": str(e)}, 500
-    conn.close()
-    return {"status": "ok"}
 
 
 if __name__ == "__main__":
