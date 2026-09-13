@@ -273,6 +273,9 @@ def enforce_csrf():
         return None
     if request.path.startswith("/static"):
         return None
+    # allow API clients to POST JSON without CSRF token
+    if request.path.startswith("/api"):
+        return None
     token = request.form.get("csrf_token")
     if token != session.get("csrf_token"):
         return "Invalid or missing CSRF token.", 400
@@ -757,6 +760,179 @@ def delete_account(username):
 
 @app.get("/health")
 def health():
+    return {"status": "ok"}
+
+
+@app.post("/api/sync")
+def api_sync():
+    """Accept JSON payload { key: <str>, value: <any> } and persist to DB.
+    Supported keys: 'accounts', 'auditors', 'engagement-codes', 'admin-codes', 'time-entries'.
+    This is a best-effort sync endpoint for the SPA localStorage sync.
+    """
+    try:
+        data = request.get_json(force=True)
+    except Exception:
+        return {"error": "Invalid JSON"}, 400
+    if not data or "key" not in data:
+        return {"error": "Missing key"}, 400
+    key = data["key"]
+    value = data.get("value")
+    # require authentication for API sync
+    if "username" not in session:
+        return {"error": "authentication required"}, 401
+    role = session.get("role") or ""
+    # enforce admin-only for sensitive keys
+    if role != "admin" and key in ("accounts", "engagement-codes", "admin-codes", "auditors"):
+        return {"error": "admin required"}, 403
+    conn = db()
+    try:
+        if key == "accounts" and isinstance(value, list):
+            for a in value:
+                username = a.get("username")
+                pw = a.get("passwordHash") or a.get("password_hash") or ""
+                role = a.get("role") or "auditor"
+                auditor = a.get("auditorInitials") or a.get("auditor") or ""
+                if not username:
+                    continue
+                conn.execute("INSERT OR REPLACE INTO accounts VALUES (?, ?, ?, ?)", (username, pw, role, auditor))
+        elif key == "auditors" and isinstance(value, list):
+            for ad in value:
+                initials = (ad.get("initials") or "").strip().upper()
+                name = ad.get("name") or ""
+                if not initials:
+                    continue
+                conn.execute("INSERT OR REPLACE INTO auditors VALUES (?, ?)", (initials, name))
+        elif key in ("engagement-codes", "admin-codes") and isinstance(value, list):
+            kind = "engagement" if key == "engagement-codes" else "admin"
+            for c in value:
+                code = c.get("code")
+                description = c.get("description") or ""
+                year = int(c.get("year") or date.today().year)
+                annual = c.get("annualBudgetMD") if c.get("annualBudgetMD") not in ("", None) else c.get("annualBudgetMD")
+                auditor_budget = c.get("auditorBudgetMD") if c.get("auditorBudgetMD") not in ("", None) else c.get("auditorBudgetMD")
+                # convert empty strings to None
+                if annual == "":
+                    annual = None
+                if auditor_budget == "":
+                    auditor_budget = None
+                if not code:
+                    continue
+                conn.execute("INSERT INTO codes(code, description, kind, year, annual_budget, auditor_budget) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(code, kind, year) DO UPDATE SET description=excluded.description, annual_budget=COALESCE(excluded.annual_budget, codes.annual_budget), auditor_budget=COALESCE(excluded.auditor_budget, codes.auditor_budget)", (code, description, kind, year, annual, auditor_budget))
+        elif key == "time-entries" and isinstance(value, dict):
+            # value is mapping like { 'CLL__2026-09-13': { '12-13': 'LBRK-NAPP-0000', '6-7': 'RDAY-NAPP-0000' }, ... }
+            # auditors may only sync their own entries; admins may sync all
+            if role == "auditor":
+                allowed_auditor = session.get("auditor") or ""
+            else:
+                allowed_auditor = None
+            for composite, slots in value.items():
+                if not composite or not isinstance(slots, dict):
+                    continue
+                parts = composite.split("__")
+                if len(parts) != 2:
+                    continue
+                auditor, work_date = parts[0], parts[1]
+                # if an auditor is syncing, ensure they only write their own auditor data
+                if allowed_auditor is not None and auditor != allowed_auditor:
+                    return {"error": "auditor may only sync their own entries"}, 403
+                # replace entries for this auditor/date
+                conn.execute("DELETE FROM entries WHERE auditor=? AND work_date=?", (auditor, work_date))
+                for slot, code in slots.items():
+                    if code:
+                        conn.execute("INSERT OR REPLACE INTO entries VALUES (?, ?, ?, ?)", (auditor, work_date, slot, code))
+        else:
+            return {"error": "Unsupported key or invalid value"}, 400
+        conn.commit()
+    except Exception as e:
+        try:
+            conn.close()
+        except Exception:
+            pass
+        return {"error": str(e)}, 500
+    conn.close()
+    return {"status": "ok"}
+
+
+@app.post("/api/login_json")
+def api_login_json():
+    try:
+        data = request.get_json(force=True)
+    except Exception:
+        return {"error": "Invalid JSON"}, 400
+    username = (data.get("username") or "").strip()
+    password = data.get("password") or ""
+    if not username or not password:
+        return {"error": "username and password required"}, 400
+    account = db().execute("SELECT * FROM accounts WHERE lower(username)=lower(?)", (username,)).fetchone()
+    if not account or not password_matches(account["password_hash"], password):
+        return {"error": "invalid credentials"}, 401
+    # establish server-side session and bind to client
+    sid = secrets.token_hex(16)
+    session['sid'] = sid
+    session['username'] = account["username"]
+    session['role'] = account["role"]
+    session['auditor'] = account.get("auditor") if account.get("auditor") else ""
+    session['ua'] = request.headers.get('User-Agent', '')[:512]
+    session['ip'] = request.remote_addr
+    now = int(time.time())
+    session['created_at'] = now
+    session['last_active'] = now
+    try:
+        conn = db()
+        conn.execute("INSERT OR REPLACE INTO sessions(sid, username, ua, ip, created_at, last_active, revoked) VALUES (?, ?, ?, ?, ?, ?, 0)", (sid, session['username'], session['ua'], session['ip'], now, now))
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
+    return {"status": "ok", "username": session['username'], "role": session['role'], "auditor": session['auditor']}
+
+
+@app.post("/api/sync_public")
+def api_sync_public():
+    """Public sync endpoint for minimal persistence without authentication.
+    Only accepts `accounts` and `time-entries` keys to avoid broader unauthenticated writes.
+    """
+    try:
+        data = request.get_json(force=True)
+    except Exception:
+        return {"error": "Invalid JSON"}, 400
+    if not data or "key" not in data:
+        return {"error": "Missing key"}, 400
+    key = data["key"]
+    value = data.get("value")
+    conn = db()
+    try:
+        if key == "accounts" and isinstance(value, list):
+            for a in value:
+                username = a.get("username")
+                pw = a.get("passwordHash") or a.get("password_hash") or ""
+                role = a.get("role") or "auditor"
+                auditor = a.get("auditorInitials") or a.get("auditor") or ""
+                if not username:
+                    continue
+                conn.execute("INSERT OR REPLACE INTO accounts VALUES (?, ?, ?, ?)", (username, pw, role, auditor))
+        elif key == "time-entries" and isinstance(value, dict):
+            for composite, slots in value.items():
+                if not composite or not isinstance(slots, dict):
+                    continue
+                parts = composite.split("__")
+                if len(parts) != 2:
+                    continue
+                auditor, work_date = parts[0], parts[1]
+                conn.execute("DELETE FROM entries WHERE auditor=? AND work_date=?", (auditor, work_date))
+                for slot, code in slots.items():
+                    if code:
+                        conn.execute("INSERT OR REPLACE INTO entries VALUES (?, ?, ?, ?)", (auditor, work_date, slot, code))
+        else:
+            return {"error": "Unsupported key or invalid value for public sync"}, 400
+        conn.commit()
+    except Exception as e:
+        try:
+            conn.close()
+        except Exception:
+            pass
+        return {"error": str(e)}, 500
+    conn.close()
     return {"status": "ok"}
 
 

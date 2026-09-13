@@ -132,6 +132,33 @@ async function loadKey(key, fallback) {
 async function saveKey(key, value) {
   try {
     localStorage.setItem(STORAGE_PREFIX + key, JSON.stringify(value));
+    // try authenticated sync first; if unauthorized or fails, fallback to public sync
+    try {
+      const res = await fetch("/api/sync", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ key, value }),
+      });
+      if (!res.ok && (res.status === 401 || res.status === 403)) {
+        // try public sync for allowed keys
+        await fetch("/api/sync_public", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ key, value }),
+        }).catch(() => {});
+      }
+    } catch (e) {
+      try {
+        await fetch("/api/sync_public", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ key, value }),
+        }).catch(() => {});
+      } catch {
+        // ignore
+      }
+    }
   } catch {
     // best effort
   }
@@ -194,29 +221,78 @@ export default function App() {
   const persistEngagements = useCallback((next) => {
     setEngagements(next);
     saveKey("engagement-codes", next);
+    if (currentUser) serverSync("engagement-codes", next);
   }, []);
   const persistAdmin = useCallback((next) => {
     setAdminCodes(next);
     saveKey("admin-codes", next);
+    if (currentUser) serverSync("admin-codes", next);
   }, []);
   const persistAuditors = useCallback((next) => {
     setAuditors(next);
     saveKey("auditors", next);
+    if (currentUser) serverSync("auditors", next);
   }, []);
   const persistEntries = useCallback((next) => {
     setEntries(next);
     saveKey("time-entries", next);
+    if (currentUser) serverSync("time-entries", next);
   }, []);
   const persistAccounts = useCallback((next) => {
     setAccounts(next);
     saveKey("accounts", next);
+    if (currentUser) serverSync("accounts", next);
   }, []);
 
+  async function serverSync(key, value) {
+    try {
+      await fetch("/api/sync", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ key, value }),
+      });
+    } catch (e) {
+      // ignore network errors
+    }
+  }
+
+  async function fullSync() {
+    // push all local keys to the server (server enforces permissions)
+    const keys = ["engagement-codes", "admin-codes", "auditors", "time-entries", "accounts"];
+    for (const k of keys) {
+      try {
+        const v = await loadKey(k, k === "time-entries" ? {} : []);
+        await serverSync(k, v);
+      } catch (e) {
+        // ignore
+      }
+    }
+  }
+
   async function handleLogin(username, password) {
+    // try server login first
+    try {
+      const res = await fetch("/api/login_json", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username, password }),
+      });
+      if (res.ok) {
+        const payload = await res.json();
+        setCurrentUser({ username: payload.username, role: payload.role, auditorInitials: payload.auditor || "" });
+        if (payload.role === "auditor" && payload.auditor) setSelectedAuditor(payload.auditor);
+        // push local data to server
+        fullSync();
+        return true;
+      }
+    } catch (e) {
+      // network errors fall back to local-only auth
+    }
+    // fallback to local-only auth when server unavailable
     const passwordHash = await hashPassword(password);
-    const found = accounts.find(
-      (a) => a.username.toLowerCase() === username.trim().toLowerCase() && a.passwordHash === passwordHash
-    );
+    const found = accounts.find((a) => a.username.toLowerCase() === username.trim().toLowerCase() && a.passwordHash === passwordHash);
     if (!found) return false;
     setCurrentUser({ username: found.username, role: found.role, auditorInitials: found.auditorInitials || "" });
     if (found.role === "auditor" && found.auditorInitials) setSelectedAuditor(found.auditorInitials);
@@ -774,6 +850,7 @@ function ReferenceTab() {
 function LoginScreen({ onLogin }) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -802,7 +879,12 @@ function LoginScreen({ onLogin }) {
         <label style={labelStyle}>Username</label>
         <input style={inputStyle} value={username} onChange={(e) => setUsername(e.target.value)} autoFocus />
         <label style={labelStyle}>Password</label>
-        <input style={inputStyle} type="password" value={password} onChange={(e) => setPassword(e.target.value)} />
+        <div style={{ position: "relative" }}>
+          <input style={{ ...inputStyle, paddingRight: 36 }} type={showPassword ? "text" : "password"} value={password} onChange={(e) => setPassword(e.target.value)} />
+          <button type="button" onClick={() => setShowPassword((s) => !s)} aria-label={showPassword ? "Hide password" : "Show password"} style={{ position: "absolute", right: 8, top: "50%", transform: "translateY(-50%)", border: "none", background: "transparent", cursor: "pointer", fontSize: 16, padding: 4 }}>
+            {showPassword ? "🙈" : "👁"}
+          </button>
+        </div>
         {error && <p style={{ color: "#A32D2D", fontSize: 13, marginTop: -4 }}>{error}</p>}
         <button style={btnStyle} type="submit" disabled={busy}>{busy ? "Signing in…" : "Log in"}</button>
       </form>
@@ -814,10 +896,12 @@ function LoginScreen({ onLogin }) {
 function AccountsTab({ accounts, auditors, onChange, currentUsername }) {
   const [newUsername, setNewUsername] = useState("");
   const [newPassword, setNewPassword] = useState("");
+  const [showNewPassword, setShowNewPassword] = useState(false);
   const [newRole, setNewRole] = useState("auditor");
   const [newAuditorInitials, setNewAuditorInitials] = useState(auditors[0]?.initials || "");
   const [error, setError] = useState("");
   const [resetPw, setResetPw] = useState({});
+  const [showResetPw, setShowResetPw] = useState({});
 
   async function addAccount() {
     setError("");
@@ -868,7 +952,12 @@ function AccountsTab({ accounts, auditors, onChange, currentUsername }) {
           </div>
           <div>
             <label style={{ fontSize: 12, color: "#5A5A54", display: "block", marginBottom: 4 }}>Password</label>
-            <input type="password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} style={{ border: "1px solid #D8D8D2", borderRadius: 4, padding: "6px 8px" }} />
+            <div style={{ position: "relative" }}>
+              <input type={showNewPassword ? "text" : "password"} value={newPassword} onChange={(e) => setNewPassword(e.target.value)} style={{ border: "1px solid #D8D8D2", borderRadius: 4, padding: "6px 8px", paddingRight: 36 }} />
+              <button type="button" onClick={() => setShowNewPassword((s) => !s)} aria-label={showNewPassword ? "Hide password" : "Show password"} style={{ position: "absolute", right: 8, top: "50%", transform: "translateY(-50%)", border: "none", background: "transparent", cursor: "pointer", fontSize: 14, padding: 4 }}>
+                {showNewPassword ? "🙈" : "👁"}
+              </button>
+            </div>
           </div>
           <div>
             <label style={{ fontSize: 12, color: "#5A5A54", display: "block", marginBottom: 4 }}>Role</label>
@@ -916,12 +1005,18 @@ function AccountsTab({ accounts, auditors, onChange, currentUsername }) {
                   <td>{a.auditorInitials || "—"}</td>
                   <td>
                     <div style={{ display: "flex", gap: 4 }}>
-                      <input
-                        type="password"
-                        placeholder="New password"
-                        value={resetPw[a.username] || ""}
-                        onChange={(e) => setResetPw((prev) => ({ ...prev, [a.username]: e.target.value }))}
-                      />
+                      <div style={{ position: "relative", flex: 1 }}>
+                        <input
+                          type={showResetPw[a.username] ? "text" : "password"}
+                          placeholder="New password"
+                          value={resetPw[a.username] || ""}
+                          onChange={(e) => setResetPw((prev) => ({ ...prev, [a.username]: e.target.value }))}
+                          style={{ width: "100%", boxSizing: "border-box", paddingRight: 36 }}
+                        />
+                        <button type="button" onClick={() => setShowResetPw((prev) => ({ ...prev, [a.username]: !prev[a.username] }))} aria-label={showResetPw[a.username] ? "Hide password" : "Show password"} style={{ position: "absolute", right: 6, top: "50%", transform: "translateY(-50%)", border: "none", background: "transparent", cursor: "pointer", fontSize: 14, padding: 4 }}>
+                          {showResetPw[a.username] ? "🙈" : "👁"}
+                        </button>
+                      </div>
                       <button className="pt-btn secondary" onClick={() => submitReset(a.username)}>Set</button>
                     </div>
                   </td>
