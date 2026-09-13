@@ -189,6 +189,32 @@ def build_engagement_code(main_code, sub_code, series_code):
     return f"{main_code}-{sub_code}-{series_code}"
 
 
+def default_auditor_password(index: int) -> str:
+    defaults = ["test", "test1", "test2", "test3"]
+    if index < len(defaults):
+        return defaults[index]
+    return f"test{index}"
+
+
+def ensure_auditor_account(connection, initials: str, name: str = ""):
+    initials = (initials or "").strip().upper()
+    if not initials:
+        return
+    connection.execute("INSERT OR IGNORE INTO auditors(initials, name) VALUES (?, ?)", (initials, name or ""))
+    username = initials
+    row = connection.execute("SELECT 1 FROM accounts WHERE lower(username)=lower(?)", (username,)).fetchone()
+    if row is not None:
+        connection.execute("UPDATE accounts SET auditor=? WHERE lower(username)=lower(?) AND (auditor IS NULL OR auditor='')", (initials, username))
+        return
+    auditor_order = connection.execute("SELECT initials FROM auditors ORDER BY rowid").fetchall()
+    index = next((i for i, row in enumerate(auditor_order) if row["initials"] == initials), 0)
+    password = default_auditor_password(index)
+    connection.execute(
+        "INSERT OR IGNORE INTO accounts(username, password_hash, password_plaintext, role, auditor) VALUES (?, ?, ?, 'auditor', ?)",
+        (username, password_hash(password), password, initials),
+    )
+
+
 def engagement_base_code(code):
     parts = code.split("-")
     if len(parts) == 3 and parts[1] in OVERTIME_SUBCODES:
@@ -257,6 +283,8 @@ def init_db():
         connection.execute("UPDATE accounts SET password_plaintext = COALESCE(password_plaintext, '') WHERE password_plaintext IS NULL")
     if connection.execute("SELECT COUNT(*) FROM auditors").fetchone()[0] == 0:
         connection.executemany("INSERT INTO auditors VALUES (?, ?)", DEFAULT_AUDITORS)
+    for initials, name in connection.execute("SELECT initials, name FROM auditors ORDER BY initials").fetchall():
+        ensure_auditor_account(connection, initials, name or "")
     if connection.execute("SELECT COUNT(*) FROM codes").fetchone()[0] == 0:
         connection.executemany("INSERT INTO codes(code, description, kind, year) VALUES (?, ?, 'engagement', ?)", [(c, d, date.today().year) for c, d in DEFAULT_ENGAGEMENTS])
         connection.executemany("INSERT INTO codes(code, description, kind, year) VALUES (?, ?, 'admin', ?)", [(c, d, date.today().year) for c, d in DEFAULT_ADMIN_CODES])
@@ -774,14 +802,14 @@ def add_account():
         connection.close()
         return "Auditor accounts must be linked to auditor initials.", 400
     if role == "auditor" and auditor:
+        username = auditor
         existing_auditor_account = connection.execute("SELECT username FROM accounts WHERE role='auditor' AND auditor=?", (auditor,)).fetchone()
         if existing_auditor_account:
             connection.close()
             return f"Auditor initials {auditor} are already linked to account {existing_auditor_account['username']}.", 409
+        connection.execute("INSERT OR IGNORE INTO auditors(initials, name) VALUES (?, '')", (auditor,))
     plain_password = request.form.get("password", "")
     connection.execute("INSERT INTO accounts(username, password_hash, password_plaintext, role, auditor) VALUES (?, ?, ?, ?, ?)", (username, password_hash(plain_password), plain_password, role, auditor))
-    if role == "auditor" and auditor:
-        connection.execute("INSERT OR IGNORE INTO auditors(initials, name) VALUES (?, '')", (auditor,))
     connection.commit()
     connection.close()
     return redirect(url_for("home", tab="accounts"))
@@ -790,15 +818,21 @@ def add_account():
 @app.post("/accounts/<username>/update")
 @admin_only
 def update_account(username):
-    connection = db(); password = request.form.get("password", "")
+    connection = db()
+    old_username = username
+    password = request.form.get("password", "")
     role = request.form["role"]
     auditor = request.form.get("auditor", "").strip().upper()
     if role == "auditor" and not auditor:
         connection.close()
         return "Auditor accounts must be linked to auditor initials.", 400
+    if role == "auditor" and auditor:
+        username = auditor
+        connection.execute("INSERT OR IGNORE INTO auditors(initials, name) VALUES (?, '')", (auditor,))
     if password:
-        connection.execute("UPDATE accounts SET password_hash=?, password_plaintext=? WHERE username=?", (password_hash(password), password, username))
-    connection.execute("UPDATE accounts SET role=?, auditor=? WHERE username=?", (role, auditor, username)); connection.commit(); connection.close()
+        connection.execute("UPDATE accounts SET password_hash=?, password_plaintext=? WHERE username=?", (password_hash(password), password, old_username))
+    connection.execute("UPDATE accounts SET username=?, role=?, auditor=? WHERE username=?", (username, role, auditor, old_username))
+    connection.commit(); connection.close()
     return redirect(url_for("home", tab="accounts"))
 
 
