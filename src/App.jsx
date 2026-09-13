@@ -846,7 +846,7 @@ function LoginScreen({ onLogin }) {
         <label style={labelStyle}>Password</label>
         <div style={{ position: "relative" }}>
           <input style={{ ...inputStyle, paddingRight: 36 }} type={showPassword ? "text" : "password"} value={password} onChange={(e) => setPassword(e.target.value)} />
-          <button type="button" onClick={() => setShowPassword((s) => !s)} aria-label={showPassword ? "Hide password" : "Show password"} style={{ position: "absolute", right: 8, top: "50%", transform: "translateY(-50%)", border: "none", background: "transparent", cursor: "pointer", fontSize: 16, padding: 4 }}>
+          <button type="button" onClick={() => setShowPassword((s) => !s)} aria-label={showPassword ? "Hide password" : "Show password"} style={{ position: "absolute", right: 8, top: "50%", transform: "translateY(-50%)", border: "1px solid #D8D8D2", background: "#fff", borderRadius: 4, cursor: "pointer", fontSize: 14, lineHeight: 1, width: 26, height: 26, display: "flex", alignItems: "center", justifyContent: "center", padding: 0 }}>
             {showPassword ? "🙈" : "👁"}
           </button>
         </div>
@@ -920,7 +920,7 @@ function AccountsTab({ accounts, auditors, onChange, currentUsername }) {
             <label style={{ fontSize: 12, color: "#5A5A54", display: "block", marginBottom: 4 }}>Password</label>
             <div style={{ position: "relative" }}>
               <input type={showNewPassword ? "text" : "password"} value={newPassword} onChange={(e) => setNewPassword(e.target.value)} style={{ border: "1px solid #D8D8D2", borderRadius: 4, padding: "6px 8px", paddingRight: 36 }} />
-              <button type="button" onClick={() => setShowNewPassword((s) => !s)} aria-label={showNewPassword ? "Hide password" : "Show password"} style={{ position: "absolute", right: 8, top: "50%", transform: "translateY(-50%)", border: "none", background: "transparent", cursor: "pointer", fontSize: 14, padding: 4 }}>
+              <button type="button" onClick={() => setShowNewPassword((s) => !s)} aria-label={showNewPassword ? "Hide password" : "Show password"} style={{ position: "absolute", right: 8, top: "50%", transform: "translateY(-50%)", border: "1px solid #D8D8D2", background: "#fff", borderRadius: 4, cursor: "pointer", fontSize: 14, lineHeight: 1, width: 26, height: 26, display: "flex", alignItems: "center", justifyContent: "center", padding: 0 }}>
                 {showNewPassword ? "🙈" : "👁"}
               </button>
             </div>
@@ -979,7 +979,7 @@ function AccountsTab({ accounts, auditors, onChange, currentUsername }) {
                           onChange={(e) => setResetPw((prev) => ({ ...prev, [a.username]: e.target.value }))}
                           style={{ width: "100%", boxSizing: "border-box", paddingRight: 36 }}
                         />
-                        <button type="button" onClick={() => setShowResetPw((prev) => ({ ...prev, [a.username]: !prev[a.username] }))} aria-label={showResetPw[a.username] ? "Hide password" : "Show password"} style={{ position: "absolute", right: 6, top: "50%", transform: "translateY(-50%)", border: "none", background: "transparent", cursor: "pointer", fontSize: 14, padding: 4 }}>
+                        <button type="button" onClick={() => setShowResetPw((prev) => ({ ...prev, [a.username]: !prev[a.username] }))} aria-label={showResetPw[a.username] ? "Hide password" : "Show password"} style={{ position: "absolute", right: 6, top: "50%", transform: "translateY(-50%)", border: "1px solid #D8D8D2", background: "#fff", borderRadius: 4, cursor: "pointer", fontSize: 14, lineHeight: 1, width: 26, height: 26, display: "flex", alignItems: "center", justifyContent: "center", padding: 0 }}>
                           {showResetPw[a.username] ? "🙈" : "👁"}
                         </button>
                       </div>
@@ -988,7 +988,7 @@ function AccountsTab({ accounts, auditors, onChange, currentUsername }) {
                   </td>
                   <td>
                     <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                      <button type="button" onClick={() => setShowPlainTextPw((prev) => ({ ...prev, [a.username]: !prev[a.username] }))} aria-label={showPlainTextPw[a.username] ? "Hide password" : "Show password"} style={{ border: "1px solid #D8D8D2", background: "#fff", borderRadius: 4, padding: "4px 6px", cursor: "pointer", fontSize: 12 }}>
+                      <button type="button" onClick={() => setShowPlainTextPw((prev) => ({ ...prev, [a.username]: !prev[a.username] }))} aria-label={showPlainTextPw[a.username] ? "Hide password" : "Show password"} style={{ border: "1px solid #D8D8D2", background: "#fff", borderRadius: 4, padding: 0, cursor: "pointer", fontSize: 12, width: 26, height: 26, display: "flex", alignItems: "center", justifyContent: "center" }}>
                         {showPlainTextPw[a.username] ? "🙈" : "👁"}
                       </button>
                       {showPlainTextPw[a.username] ? (
