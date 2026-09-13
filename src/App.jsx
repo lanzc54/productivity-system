@@ -178,6 +178,7 @@ export default function App() {
   const [engagements, setEngagements] = useState([]);
   const [adminCodes, setAdminCodes] = useState([]);
   const [auditors, setAuditors] = useState([]);
+  const [engagementAssignments, setEngagementAssignments] = useState([]);
   const [entries, setEntries] = useState({});
   const [selectedAuditor, setSelectedAuditor] = useState("");
   const [weekStart, setWeekStart] = useState(startOfWeek(new Date()));
@@ -188,16 +189,18 @@ export default function App() {
   useEffect(() => {
     (async () => {
       const serverData = await loadServerData();
-      const [eng, adm, aud, ent, acc] = await Promise.all([
+      const [eng, adm, aud, assn, ent, acc] = await Promise.all([
         serverData?.["engagement-codes"] ?? loadKey("engagement-codes", DEFAULT_ENGAGEMENTS),
         serverData?.["admin-codes"] ?? loadKey("admin-codes", DEFAULT_ADMIN_CODES),
         serverData?.["auditors"] ?? loadKey("auditors", DEFAULT_AUDITORS),
+        serverData?.["engagement-assignments"] ?? loadKey("engagement-assignments", []),
         serverData?.["time-entries"] ?? loadKey("time-entries", {}),
         serverData?.["accounts"] ?? loadKey("accounts", []),
       ]);
       setEngagements(eng);
       setAdminCodes(adm);
       setAuditors(aud);
+      setEngagementAssignments(assn);
       setEntries(ent);
       if (aud.length) setSelectedAuditor(aud[0].initials);
       setAccounts(acc);
@@ -255,6 +258,7 @@ export default function App() {
         if (serverData["engagement-codes"]) setEngagements(serverData["engagement-codes"]);
         if (serverData["admin-codes"]) setAdminCodes(serverData["admin-codes"]);
         if (serverData["auditors"]) setAuditors(serverData["auditors"]);
+        if (serverData["engagement-assignments"]) setEngagementAssignments(serverData["engagement-assignments"]);
         if (serverData["time-entries"]) setEntries(serverData["time-entries"]);
         if (serverData["accounts"]) setAccounts(serverData["accounts"]);
       }
@@ -425,6 +429,7 @@ export default function App() {
           setSlotCode={setSlotCode}
           engagements={engagements}
           adminCodes={adminCodes}
+          engagementAssignments={engagementAssignments}
           canChooseAuditor={canEdit}
         />
       )}
@@ -449,11 +454,20 @@ export default function App() {
   );
 }
 
-function TimeEntryTab({ auditors, selectedAuditor, setSelectedAuditor, weekStart, setWeekStart, weekDates, getSlotCode, setSlotCode, engagements, adminCodes, canChooseAuditor }) {
+function TimeEntryTab({ auditors, selectedAuditor, setSelectedAuditor, weekStart, setWeekStart, weekDates, getSlotCode, setSlotCode, engagements, adminCodes, engagementAssignments, canChooseAuditor }) {
   function shiftWeek(days) {
     const d = new Date(weekStart);
     d.setDate(d.getDate() + days);
     setWeekStart(startOfWeek(d));
+  }
+  function assignedEngagementsForYear(year) {
+    if (!selectedAuditor) return [];
+    const match = new Set(
+      engagementAssignments
+        .filter((row) => row.auditor === selectedAuditor && String(row.year) === String(year))
+        .map((row) => row.code)
+    );
+    return engagements.filter((e) => match.has(e.code) && String(e.year || "") === String(year));
   }
   return (
     <div>
@@ -497,7 +511,7 @@ function TimeEntryTab({ auditors, selectedAuditor, setSelectedAuditor, weekStart
             <tbody>
               {weekDates.map((d) => {
                 const dateStr = toDateStr(d);
-                const yearEngagements = engagements.filter((e) => String(e.year || "") === String(d.getFullYear()));
+                const yearEngagements = assignedEngagementsForYear(d.getFullYear());
                 return (
                   <tr key={dateStr}>
                     <td style={{ fontWeight: 500 }}>{formatDisplayDate(d)}</td>
@@ -508,10 +522,14 @@ function TimeEntryTab({ auditors, selectedAuditor, setSelectedAuditor, weekStart
                           onChange={(e) => setSlotCode(selectedAuditor, dateStr, s.id, e.target.value)}
                         >
                           <option value="">—</option>
-                          <optgroup label={`Engagements (${d.getFullYear()})`}>
-                            {yearEngagements.map((e) => (
-                              <option key={e.code} value={e.code}>{e.code}</option>
-                            ))}
+                          <optgroup label={`Assigned engagements (${d.getFullYear()})`}>
+                            {yearEngagements.length ? (
+                              yearEngagements.map((e) => (
+                                <option key={e.code} value={e.code}>{e.code}</option>
+                              ))
+                            ) : (
+                              <option value="" disabled>None assigned</option>
+                            )}
                           </optgroup>
                           <optgroup label="Admin / non-engagement">
                             {adminCodes.map((c) => (

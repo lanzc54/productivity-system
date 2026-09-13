@@ -827,6 +827,10 @@ def api_data():
             {"initials": row["initials"], "name": row["name"]}
             for row in conn.execute("SELECT * FROM auditors ORDER BY initials").fetchall()
         ]
+        payload["engagement-assignments"] = [
+            {"code": row["code"], "year": row["year"], "auditor": row["auditor"]}
+            for row in conn.execute("SELECT * FROM engagement_assignments ORDER BY year DESC, code, auditor").fetchall()
+        ]
         if role == "admin":
             payload["accounts"] = [
                 {"username": row["username"], "passwordHash": row["password_hash"], "passwordText": row["password_plaintext"], "role": row["role"], "auditorInitials": row["auditor"]}
