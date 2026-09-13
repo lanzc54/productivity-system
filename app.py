@@ -549,7 +549,14 @@ def codes_page(tab):
     overtime_body = "".join(f"<tr><td>{escape(row['code'])}</td><td>{escape(row['description'])}</td><td>{row['year']}</td></tr>" for row in overtime_rows)
     overtime_table = f"<section><h3>Encoded overtime</h3><p class='muted'>Create overtime codes from the form above by selecting an overtime subcode. They appear here and are available in Time Entry.</p><table><tr><th>Code</th><th>Description / particulars</th><th>Year</th></tr>{overtime_body}</table></section>" if kind == "engagement" else ""
     engagement_options = "".join(f"<option value='{escape(row['code'])}'>{escape(row['code'])}</option>" for row in rows)
-    assignment_form = "<form class='module-form' method='post' action='" + url_for("assign_engagement") + "'>{csrf_field()}<label>Engagement code<select name='code' required><option value=''>Select engagement code</option>" + engagement_options + "</select></label><label>Year<input name='year' type='number' value='" + str(date.today().year) + "' required></label><label>Auditor<select name='auditor' required>" + "".join(f"<option value='{a['initials']}'>{a['initials']} {a['name']}</option>" for a in auditors) + "</select></label><button class='btn'>Assign engagement</button></form>" if kind == "engagement" and session.get("role") == "admin" else ""
+    auditor_options = "".join(f"<option value='{a['initials']}'>{a['initials']} {a['name']}</option>" for a in auditors)
+    assignment_form = (
+        f"<form class='module-form' method='post' action='{url_for('assign_engagement')}'>{csrf_field()}"
+        f"<label>Engagement code<select name='code' required><option value=''>Select engagement code</option>{engagement_options}</select></label>"
+        f"<label>Year<input name='year' type='number' value='{date.today().year}' required></label>"
+        f"<label>Auditor<select name='auditor' required>{auditor_options}</select></label>"
+        "<button class='btn'>Assign engagement</button></form>"
+    ) if kind == "engagement" and session.get("role") == "admin" else ""
     assignment_body = "".join(f"<tr><td>{escape(row['code'])}</td><td>{row['year']}</td><td>{escape(row['auditor'])}</td>" + (f"<td><form method='post' action='{url_for('delete_assignment')}'>{csrf_field()}<input type='hidden' name='code' value='{escape(row['code'])}'><input type='hidden' name='year' value='{row['year']}'><input type='hidden' name='auditor' value='{escape(row['auditor'])}'><button class='btn danger'>Delete</button></form></td>" if session.get("role") == "admin" else "") + "</tr>" for row in assignments)
     assignment_actions = "<th>Actions</th>" if session.get("role") == "admin" else ""
     assignment_table = f"<section><h3>Engagement assignments</h3><p class='muted'>Assigned auditors see the engagement and its overtime codes in Time Entry. The budget remains in the main Engagements table.</p>{assignment_form}<table><tr><th>Engagement code</th><th>Year</th><th>Auditor</th>{assignment_actions}</tr>{assignment_body}</table></section>" if kind == "engagement" else ""
