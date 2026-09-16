@@ -618,6 +618,8 @@ def report_page():
     if prefix:
         query += " AND code LIKE ?"
         params.append(f"{prefix}-%")
+    else:
+        query += " AND (code LIKE 'IT-%' OR code LIKE 'BP-%' OR code LIKE 'BR-%')"
     if code_filter != "all":
         query += " AND code=?"
         params.append(code_filter)
