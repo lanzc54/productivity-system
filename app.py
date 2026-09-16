@@ -184,7 +184,7 @@ BRANCH_AUDIT_TYPES = [
 BRANCH_AUDIT_ENGAGEMENTS = [
     (f"{main_code}-NAPP-{sequence}", name)
     for main_code, name in BRANCH_AUDIT_TYPES
-    for sequence in ("0000", "0001", "0002")
+    for sequence in ("0000",)
 ]
 CATALOG_ENGAGEMENTS = DEFAULT_ENGAGEMENTS + BUSINESS_PROCESS_ENGAGEMENTS + BRANCH_AUDIT_ENGAGEMENTS
 CATALOG_MAIN_CODES = sorted({code.split("-")[0] for code, _ in CATALOG_ENGAGEMENTS})
@@ -347,6 +347,9 @@ def init_db():
     )
     for table_name, rows in catalog_tables:
         connection.executemany(f"INSERT OR IGNORE INTO {table_name}(engagement_code, name, year) VALUES (?, ?, ?)", rows)
+    branch_audit_codes = tuple(f"{main_code}-NAPP-0000" for main_code, _ in BRANCH_AUDIT_TYPES)
+    connection.execute("DELETE FROM branch_audit_engagements WHERE engagement_code NOT IN ({})".format(",".join("?" for _ in branch_audit_codes)), branch_audit_codes)
+    connection.execute("DELETE FROM codes WHERE kind='engagement' AND code LIKE 'BR%-NAPP-%' AND code NOT IN ({})".format(",".join("?" for _ in branch_audit_codes)), branch_audit_codes)
     for subcode in OVERTIME_SUBCODES:
         connection.execute("UPDATE codes SET kind='overtime' WHERE kind='engagement' AND code LIKE ?", (f"%-{subcode}-%",))
     seed_year_weekends(connection, date.today().year)
