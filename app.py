@@ -483,7 +483,9 @@ def entry_page():
     for code in codes:
         if code["year"] == days[0].year:
             assigned = (engagement_base_code(code["code"]), code["year"], selected) in assignments
-            if session.get("role") == "admin" or code["kind"] == "admin" or assigned:
+            is_admin_code = code["kind"] == "admin"
+            is_engagement_code = code["kind"] in {"engagement", "overtime"}
+            if is_admin_code or (is_engagement_code and (session.get("role") == "admin" or assigned)):
                 entry_codes.append(code["code"])
             parts = code["code"].split("-")
             if len(parts) == 3 and parts[1] == "NAPP" and code["kind"] == "engagement" and (session.get("role") == "admin" or assigned):
