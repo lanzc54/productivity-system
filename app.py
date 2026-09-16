@@ -618,7 +618,7 @@ def report_page():
     prefix_map = {"it": "IT", "business": "BP", "branch": "BR"}
     prefix = prefix_map.get(audit_type)
     code_filter = request.args.get("code", "all").strip().upper()
-    code_rows = connection.execute("SELECT code, description FROM codes WHERE kind='engagement' ORDER BY code").fetchall()
+    code_rows = connection.execute("SELECT code, description, kind FROM codes ORDER BY kind, code").fetchall()
     if prefix:
         code_rows = [row for row in code_rows if row["code"].startswith(prefix)]
     valid_codes = {row["code"] for row in code_rows}
@@ -630,8 +630,6 @@ def report_page():
     if prefix:
         query += " AND code LIKE ?"
         params.append(f"{prefix}-%")
-    else:
-        query += " AND (code LIKE 'IT-%' OR code LIKE 'BP-%' OR code LIKE 'BR-%')"
     if code_filter != "all":
         query += " AND code=?"
         params.append(code_filter)
