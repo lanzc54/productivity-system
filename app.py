@@ -399,7 +399,7 @@ PAGE = """<!doctype html><html lang='en'><head><meta charset='utf-8'><meta name=
 <style>
 :root{--ink:#142b35;--ink-soft:#5f7074;--line:#d9e1df;--paper:#f5f7f4;--white:#fff;--teal:#087f71;--teal-dark:#07564f;--coral:#e56d50;--shadow:0 14px 35px rgba(20,43,53,.08)}
 *{box-sizing:border-box}body{font:14px/1.5 system-ui,-apple-system,Segoe UI,sans-serif;color:var(--ink);background:var(--paper);margin:0;min-height:100vh}body:before{content:'';display:block;height:7px;background:linear-gradient(90deg,var(--teal-dark),var(--teal),var(--coral))}.shell{max-width:1240px;margin:0 auto;padding:28px 22px 56px}.topbar{display:flex;justify-content:space-between;align-items:center;gap:20px;margin-bottom:28px}.brand{display:flex;align-items:center;gap:12px}.brand-mark{display:grid;place-items:center;width:42px;height:42px;border-radius:12px;background:var(--ink);color:#fff;font-weight:800;letter-spacing:-1px}.brand h1{font-size:18px;line-height:1.1;margin:0}.brand small{display:block;color:var(--ink-soft);font-size:11px;margin-top:3px;letter-spacing:.04em;text-transform:uppercase}.identity{color:var(--ink-soft);font-size:13px;text-align:right}.identity a{color:var(--coral);font-weight:700;text-decoration:none;margin-left:10px}.nav{display:flex;gap:5px;flex-wrap:wrap;padding:6px;background:#e8efec;border:1px solid var(--line);border-radius:13px;margin-bottom:28px}.nav a{padding:9px 14px;color:var(--ink-soft);text-decoration:none;border-radius:9px;font-weight:650}.nav a:hover{background:#fff;color:var(--teal-dark)}.content{min-width:0}.card{background:var(--white);border:1px solid var(--line);border-radius:16px;padding:22px;margin:16px 0;box-shadow:var(--shadow)}h2{font-size:24px;letter-spacing:-.5px;margin:0 0 18px}h3{font-size:17px}.card>p.muted{margin-top:-10px;margin-bottom:18px}.muted{color:var(--ink-soft)}label{display:inline-flex;flex-direction:column;gap:5px;color:var(--ink-soft);font-size:12px;font-weight:700;min-width:180px;margin:0 8px 14px 0}table{width:100%;border-collapse:separate;border-spacing:0;font-size:12px;overflow:hidden}th,td{border-bottom:1px solid var(--line);padding:10px 9px;text-align:left;white-space:nowrap}th{background:var(--ink);color:#fff;font-size:11px;text-transform:uppercase;letter-spacing:.05em}.auditor-actions{display:flex;align-items:center;gap:8px;flex-wrap:nowrap}.auditor-actions form{display:flex;align-items:center;gap:8px;margin:0}.auditor-actions input{width:150px}.auditor-actions .btn{margin:0}.auditor-delete .btn{margin-left:2px}.auditors-table th:last-child{width:260px}.auditors-table td{vertical-align:middle}.auditor-edit{min-width:320px}.auditor-delete{flex-shrink:0}.brand{display:flex;align-items:center;gap:12px}.brand-logo{width:52px;height:52px;object-fit:contain;border-radius:50%;box-shadow:0 3px 8px rgba(20,43,53,.2);background:#fff;padding:3px}.brand h1{font-size:24px;line-height:1.2;margin:0}.brand small{display:block;color:var(--ink-soft);font-size:11px;margin-top:3px;letter-spacing:.04em;text-transform:uppercase}.footer{font-size:12px;color:var(--ink-soft);text-align:center;padding:20px 0 2px;border-top:1px solid var(--line);margin-top:30px}.footer b{color:var(--teal-dark)}th:first-child{border-radius:8px 0 0 0}th:last-child{border-radius:0 8px 0 0}tr:last-child td{border-bottom:0}tr:hover td{background:#f2f8f5}input,select{font:inherit;width:100%;padding:8px 10px;background:#fff;color:var(--ink);border:1px solid #c8d4d1;border-radius:8px;outline:none}input:focus,select:focus{border-color:var(--teal);box-shadow:0 0 0 3px rgba(8,127,113,.12)}.grid{overflow:auto;border:1px solid var(--line);border-radius:10px}.grid table{min-width:1800px}.grid th,.grid td{padding:7px}.grid td:first-child{background:#f7faf8}.btn{background:var(--teal-dark);color:white;border:0;padding:9px 15px;border-radius:8px;cursor:pointer;font-weight:700}.btn:hover{background:var(--teal)}.error{color:#b23f2d}.login-card{max-width:410px;margin:90px auto}.login-card .brand{margin-bottom:28px}.login-card .btn{width:100%;margin-top:4px}@media(max-width:700px){.shell{padding:20px 12px 40px}.topbar{align-items:flex-start;flex-direction:column;margin-bottom:20px}.identity{text-align:left}.nav{overflow:auto;flex-wrap:nowrap}.nav a{white-space:nowrap}.card{padding:16px;border-radius:12px}h2{font-size:21px}}
-</style><style>.module-form{display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap;margin-bottom:18px}.module-form input,.module-form select{min-width:170px}.module-form button{margin-bottom:14px}.account-edit{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.account-edit input,.account-edit select{width:150px}.account-actions{display:flex;align-items:center;gap:8px;white-space:nowrap}.account-actions form{margin:0}.account-actions .btn{margin:0}.accounts-table th:last-child{width:120px}.accounts-table td{vertical-align:middle}.danger{background:#a94335!important}.danger:hover{background:#87352b!important}@media(max-width:700px){body{overflow-x:hidden}.shell{width:100%;padding:16px 10px 36px}.topbar{gap:12px}.brand h1{font-size:16px}.identity{font-size:12px}.nav{width:100%;overflow-x:auto}.nav a{padding:9px 11px}.card{width:100%;overflow:hidden;padding:14px}.module-form{display:block}.module-form label{display:flex;width:100%;margin-right:0}.module-form input,.module-form select{min-width:0;margin-bottom:10px}.module-form button{width:100%;margin:2px 0 8px}.account-edit{display:block}.account-edit input,.account-edit select{width:100%;margin-bottom:8px}.account-actions{display:flex;align-items:center;gap:8px}.grid{width:100%;max-width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch}.grid table{min-width:1500px}.card>table{display:block;width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch}.card>table th,.card>table td{white-space:nowrap}}
+</style><style>.module-form{display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap;margin-bottom:18px}.module-form input,.module-form select{min-width:170px}.module-form button{margin-bottom:14px}.account-edit{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.account-edit input,.account-edit select{width:150px}.account-actions{display:flex;align-items:center;gap:8px;white-space:nowrap}.account-actions form{margin:0}.account-actions .btn{margin:0}.accounts-table th:last-child{width:120px}.accounts-table td{vertical-align:middle}.report-chart-wrap{background:#f7faf8;border:1px solid var(--line);border-radius:12px;padding:10px 16px;margin:16px 0}.report-chart{width:100%;min-height:280px;display:block}.chart-axis{stroke:#b8c8c3;stroke-width:1}.chart-axis-label,.chart-label,.chart-value{fill:var(--ink-soft);font-size:12px}.chart-value{fill:var(--ink);font-weight:700}.chart-empty{fill:var(--ink-soft);font-size:14px}.report-grid{display:grid;grid-template-columns:1fr 1fr;gap:18px}.report-grid section{min-width:0}.report-grid h3{margin-top:8px}.report-grid table{border:1px solid var(--line)}.danger{background:#a94335!important}.danger:hover{background:#87352b!important}@media(max-width:700px){body{overflow-x:hidden}.shell{width:100%;padding:16px 10px 36px}.topbar{gap:12px}.brand h1{font-size:16px}.identity{font-size:12px}.nav{width:100%;overflow-x:auto}.nav a{padding:9px 11px}.card{width:100%;overflow:hidden;padding:14px}.module-form{display:block}.module-form label{display:flex;width:100%;margin-right:0}.module-form input,.module-form select{min-width:0;margin-bottom:10px}.module-form button{width:100%;margin:2px 0 8px}.account-edit{display:block}.account-edit input,.account-edit select{width:100%;margin-bottom:8px}.account-actions{display:flex;align-items:center;gap:8px}.grid{width:100%;max-width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch}.grid table{min-width:1500px}.card>table{display:block;width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch}.card>table th,.card>table td{white-space:nowrap}.report-grid{grid-template-columns:1fr}.report-chart{min-width:620px}}
 </style></head><body><div class='shell'>
 {% if user %}<header class='topbar'><div class='brand'><img class='brand-logo' src='{{ url_for("static", filename="logo.png") }}' alt='IA Productivity System'><div><h1>IA Productivity System</h1><small>IT audit operations</small></div></div><div class='identity'>Signed in as <b>{{ user }}</b> · {{ role }}<a href='{{ url_for("logout") }}'>Log out</a></div></header><nav class='nav'>{% for item in tabs %}<a href='?tab={{ item[0] }}'>{{ item[1] }}</a>{% endfor %}</nav>{% endif %}
 <main class='content'>{{ content|safe }}</main><footer class='footer'>Created by © Lanz Albert Catabay, 2026. All rights reserved.</footer></div></body></html>"""
@@ -407,7 +407,7 @@ PAGE = """<!doctype html><html lang='en'><head><meta charset='utf-8'><meta name=
 
 def render(content, **context):
     tabs = [("entry", "Time entry"), ("monitoring", "Monitoring"), ("engagements", "Engagements"), ("admin", "Non-engagement codes"), ("auditors", "Auditors")]
-    if session.get("role") == "admin": tabs.append(("accounts", "Accounts"))
+    if session.get("role") == "admin": tabs.extend([("report", "Report"), ("accounts", "Accounts")])
     context = {**context, "csrf_token": generate_csrf_token()}
     rendered_content = render_template_string(content, **context)
     return render_template_string(PAGE, content=rendered_content, user=session.get("username"), role=session.get("role", "").title(), tabs=tabs, csrf_token=context["csrf_token"])
@@ -439,6 +439,7 @@ def home():
     tab = request.args.get("tab", "entry")
     if tab == "entry": return entry_page()
     if tab == "monitoring": return monitoring_page()
+    if tab == "report": return report_page()
     if tab in {"engagements", "admin", "overtime"}: return codes_page(tab)
     if tab == "auditors": return auditors_page()
     if tab == "accounts": return accounts_page()
@@ -586,6 +587,66 @@ def monitoring_page():
     year_picker = "<form method='get' class='module-form'><input type='hidden' name='tab' value='monitoring'><label>Year<select name='year' onchange='this.form.submit()'>" + "".join(f"<option value='{option}' {'selected' if option == year else ''}>{option}</option>" for option in sorted(years, reverse=True)) + "</select></label></form>"
     variance_description = "Variance = Budgeted MD / auditor - your actual MD." if session.get("role") == "auditor" else "Variance = Budgeted MD / auditor - total actual MD across auditors."
     content = f"<div class='card'><h2>Monitoring</h2>{year_picker}<p class='muted'>{variance_description}</p><div class='grid'><table><tr><th>Code</th><th>Description</th><th>Annual budget MD</th><th>Budgeted MD / auditor</th>{actual_header}<th>Variance</th></tr>{body}</table></div></div><div class='card'><h2>Engagement usage</h2><p class='muted'>Time entered against leave, lunch, training, meetings, and other non-budgeted codes.</p><div class='grid'><table><tr><th>Code</th><th>Description</th>{admin_header}<th>Total MD used</th></tr>{admin_body}</table></div></div>"
+    return render(content)
+
+
+@admin_only
+def report_page():
+    connection = db()
+    today = date.today()
+    try:
+        end_date = date.fromisoformat(request.args.get("end", today.isoformat()))
+        start_date = date.fromisoformat(request.args.get("start", (today - timedelta(days=13)).isoformat()))
+    except ValueError:
+        start_date, end_date = today - timedelta(days=13), today
+    if start_date > end_date:
+        start_date, end_date = end_date, start_date
+
+    audit_type = request.args.get("audit_type", "all").lower()
+    prefix_map = {"it": "IT", "business": "BP", "branch": "BR"}
+    prefix = prefix_map.get(audit_type)
+    code_filter = request.args.get("code", "all").strip().upper()
+    code_rows = connection.execute("SELECT code, description FROM codes WHERE kind='engagement' ORDER BY code").fetchall()
+    if prefix:
+        code_rows = [row for row in code_rows if row["code"].startswith(prefix)]
+    valid_codes = {row["code"] for row in code_rows}
+    if code_filter not in valid_codes:
+        code_filter = "all"
+    auditors = connection.execute("SELECT initials, name FROM auditors ORDER BY initials").fetchall()
+    query = "SELECT auditor, code, COUNT(*) * ? AS md FROM entries WHERE work_date BETWEEN ? AND ?"
+    params = [MD_PER_SLOT, start_date.isoformat(), end_date.isoformat()]
+    if prefix:
+        query += " AND code LIKE ?"
+        params.append(f"{prefix}-%")
+    if code_filter != "all":
+        query += " AND code=?"
+        params.append(code_filter)
+    query += " GROUP BY auditor, code"
+    usage_rows = connection.execute(query, params).fetchall()
+    totals = {row["initials"]: 0 for row in auditors}
+    code_totals = {}
+    for row in usage_rows:
+        totals[row["auditor"]] = totals.get(row["auditor"], 0) + row["md"]
+        code_totals[row["code"]] = code_totals.get(row["code"], 0) + row["md"]
+    max_total = max(totals.values(), default=0)
+    chart_width, chart_height, chart_bottom, chart_top = 900, 330, 270, 35
+    chart_bars = []
+    bar_width = max(36, min(90, 700 // max(1, len(totals))))
+    chart_gap = 700 / max(1, len(totals))
+    for index, auditor in enumerate(auditors):
+        initials = auditor["initials"]
+        value = totals.get(initials, 0)
+        bar_height = 0 if not max_total else (value / max_total) * (chart_bottom - chart_top)
+        x = 100 + index * chart_gap + (chart_gap - bar_width) / 2
+        y = chart_bottom - bar_height
+        chart_bars.append(f"<rect x='{x:.1f}' y='{y:.1f}' width='{bar_width}' height='{bar_height:.1f}' rx='4' fill='#087f71'><title>{escape(initials)}: {value:.3f} MD</title></rect><text x='{x + bar_width / 2:.1f}' y='{max(22, y - 8):.1f}' text-anchor='middle' class='chart-value'>{value:.3f}</text><text x='{x + bar_width / 2:.1f}' y='298' text-anchor='middle' class='chart-label'>{escape(initials)}</text>")
+    chart = f"<svg class='report-chart' viewBox='0 0 {chart_width} {chart_height}' role='img' aria-label='Engagement usage in man-days per auditor'><line x1='90' y1='{chart_bottom}' x2='850' y2='{chart_bottom}' class='chart-axis'/><line x1='90' y1='{chart_top}' x2='90' y2='{chart_bottom}' class='chart-axis'/><text x='18' y='42' class='chart-axis-label'>MD</text>{''.join(chart_bars) if chart_bars else '<text x="450" y="160" text-anchor="middle" class="chart-empty">No engagement usage in this date range</text>'}</svg>"
+    chart_rows = "".join(f"<tr><td>{escape(row['initials'])}</td><td>{escape(row['name'] or '-')}</td><td>{totals.get(row['initials'], 0):.3f}</td></tr>" for row in auditors)
+    code_breakdown = "".join(f"<tr><td>{escape(code)}</td><td>{escape(next((row['description'] for row in code_rows if row['code'] == code), '-'))}</td><td>{value:.3f}</td></tr>" for code, value in sorted(code_totals.items()))
+    code_options = "".join(f"<option value='{escape(row['code'])}' {'selected' if code_filter == row['code'] else ''}>{escape(row['code'])} - {escape(row['description'])}</option>" for row in code_rows)
+    filter_form = f"<form method='get' class='module-form'><input type='hidden' name='tab' value='report'><label>Audit engagement type<select name='audit_type' onchange='this.form.submit()'><option value='all' {'selected' if audit_type == 'all' else ''}>All</option><option value='it' {'selected' if audit_type == 'it' else ''}>IT Audit</option><option value='business' {'selected' if audit_type == 'business' else ''}>Business Audit</option><option value='branch' {'selected' if audit_type == 'branch' else ''}>Branch Audit</option></select></label><label>Engagement code<select name='code'><option value='all'>All engagements</option>{code_options}</select></label><label>Start date<input type='date' name='start' value='{start_date.isoformat()}' required></label><label>End date<input type='date' name='end' value='{end_date.isoformat()}' required></label><button class='btn'>Generate report</button></form>"
+    content = f"<div class='card'><h2>Engagement usage report</h2><p class='muted'>Man-days recorded per auditor for the selected engagement group and date range.</p>{filter_form}<div class='report-chart-wrap'>{chart}</div><div class='report-grid'><section><h3>Usage by auditor</h3><table><tr><th>Auditor</th><th>Name</th><th>Total MD</th></tr>{chart_rows}</table></section><section><h3>Usage by engagement</h3><table><tr><th>Code</th><th>Engagement</th><th>Total MD</th></tr>{code_breakdown or '<tr><td colspan=3>No usage recorded</td></tr>'}</table></section></div></div>"
+    connection.close()
     return render(content)
 
 
