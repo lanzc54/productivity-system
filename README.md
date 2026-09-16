@@ -69,46 +69,6 @@ your browser's `localStorage`. That means:
   feature or a real backend (e.g. a small Node/Express API + database) before rolling
   this out to a team.
 
-## Persistence (recommended)
-
-Short version: for production use a managed Postgres database and set `DATABASE_URL`.
-If you want minimal friction locally, set `PRODUCTIVITY_DB` to an absolute path on
-persistent storage instead of relying on ephemeral containers.
-
-Recommended (production / shared team):
-
-- Provision a Postgres instance (Render, Heroku, AWS RDS, Supabase, etc.).
-- Set the `DATABASE_URL` env var to the Postgres connection string (e.g. `postgres://user:pass@host:5432/dbname`).
-- Run the included migration to copy an existing SQLite data file into Postgres:
-
-```bash
-export DATABASE_URL="postgres://user:pass@host:5432/dbname"
-export PRODUCTIVITY_DB="./productivity.db" # path to your sqlite file (if migrating)
-python scripts/migrate_sqlite_to_postgres.py
-```
-
-- Start the app (it will use `DATABASE_URL` when present):
-
-```bash
-export PRODUCTIVITY_SECRET="$(openssl rand -hex 32)"
-python app.py
-```
-
-Quick local fix (minimal effort):
-
-- Keep using SQLite but point `PRODUCTIVITY_DB` to a stable path that is not ephemeral
-  (for example a directory on the host or a mounted volume in your container):
-
-```powershell
-$env:PRODUCTIVITY_DB = "C:\data\productivity.db"
-py app.py
-```
-
-Notes:
-- The SPA now attempts a best-effort sync of its `localStorage` keys to the server via
-  `POST /api/sync`. For full safety and multi-user deployments use Postgres + `DATABASE_URL`.
-- If you want, I can make the `/api/sync` require authentication (recommended for public deployments).
-
 ## Project structure
 
 ```
