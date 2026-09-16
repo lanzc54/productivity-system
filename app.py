@@ -336,6 +336,7 @@ def init_db():
             connection.execute(f"ALTER TABLE {table_name} ADD COLUMN audit_type TEXT NOT NULL DEFAULT 'it'")
         except Exception:
             pass
+    connection.execute("UPDATE accounts SET audit_type='it' WHERE audit_type IS NULL OR audit_type NOT IN ('it', 'business', 'branch')")
 
     if connection.execute("SELECT COUNT(*) FROM accounts").fetchone()[0] == 0:
         connection.execute("INSERT INTO accounts(username, password_hash, role, auditor, audit_type) VALUES (?, ?, 'admin', '', 'it')", ("admin", password_hash("ChangeMe123!")))
@@ -543,21 +544,14 @@ def codes_page(tab):
 
 def auditors_page():
     connection = db()
-    rows = connection.execute("SELECT * FROM auditors ORDER BY initials").fetchall()
-    admin = session.get("role") == "admin"
-    body = []
-    for row in rows:
-        initials = escape(row['initials'])
-        name = escape(row['name'] or '-')
-        if admin:
-            save_form = f"<form method='post' action='{url_for('update_auditor', initials=row['initials'])}' class='auditor-edit'>{csrf_field()}<input name='new_initials' value='{initials}' required><input name='name' value='{name}'><button class='btn'>Save</button></form>"
-            delete_form = f"<form method='post' action='{url_for('delete_auditor', initials=row['initials'])}' class='auditor-delete'>{csrf_field()}<button class='btn danger'>Delete</button></form>"
-            body.append(f"<tr><td>{initials}</td><td>{name}</td><td><div class='auditor-actions'>{save_form}{delete_form}</div></td></tr>")
-        else:
-            body.append(f"<tr><td>{initials}</td><td>{name}</td></tr>")
-    add_form = f"<form class='module-form' method='post' action='{url_for('add_auditor')}'>{csrf_field()}<label>Initials<input name='initials' placeholder='Initials' maxlength='8' required></label><label>Name<input name='name' placeholder='Name'></label><button class='btn'>Add auditor</button></form>" if admin else ""
-    action_header = "<th>Actions</th>" if admin else ""
-    content = f"<div class='card'><h2>Auditors</h2>{add_form}<table class='auditors-table'><tr><th>Initials</th><th>Name</th>{action_header}</tr>{''.join(body)}</table></div>"
+    accounts = connection.execute("SELECT username, auditor, audit_type FROM accounts WHERE role='auditor' ORDER BY audit_type, auditor, username").fetchall()
+    grouped = []
+    for audit_type, label in AUDIT_TYPE_LABELS.items():
+        group_accounts = [account for account in accounts if account["audit_type"] == audit_type]
+        rows = "".join(f"<tr><td>{escape(account['auditor'])}</td><td>{escape(account['username'])}</td><td>{escape(label)}</td></tr>" for account in group_accounts)
+        grouped.append(f"<section><h3>{escape(label)}</h3><table class='auditors-table'><tr><th>Auditor initials</th><th>Account</th><th>Audit group</th></tr>{rows or '<tr><td colspan=3>No auditor accounts assigned</td></tr>'}</table></section>")
+    content = f"<div class='card'><h2>Auditor accounts by audit group</h2><p class='muted'>Auditors are managed through Accounts. The audit group selected there controls how the auditor appears in Reports.</p>{''.join(grouped)}</div>"
+    connection.close()
     return render(content)
 
 
@@ -619,7 +613,7 @@ def report_page():
     valid_codes = {row["code"] for row in code_rows}
     if code_filter not in valid_codes:
         code_filter = "all"
-    auditors = connection.execute("SELECT initials, name, audit_type FROM auditors ORDER BY initials").fetchall()
+    auditors = connection.execute("SELECT auditor AS initials, username AS name, audit_type FROM accounts WHERE role='auditor' AND auditor <> '' ORDER BY auditor").fetchall()
     query = "SELECT auditor, code, COUNT(*) * ? AS md FROM entries WHERE work_date BETWEEN ? AND ?"
     params = [MD_PER_SLOT, start_date.isoformat(), end_date.isoformat()]
     if prefix:
