@@ -247,6 +247,17 @@ def catalog_table_for_code(code):
     return None
 
 
+def audit_type_for_engagement(code):
+    main_code = code.split("-", 1)[0]
+    if main_code.startswith("IT"):
+        return "it"
+    if main_code.startswith("BP"):
+        return "business"
+    if main_code.startswith("BR"):
+        return "branch"
+    return None
+
+
 class PostgresConnection:
     def __init__(self, connection):
         self.connection = connection
@@ -509,7 +520,7 @@ def codes_page(tab):
     connection = db()
     rows = connection.execute("SELECT * FROM codes WHERE kind=? ORDER BY code", (kind,)).fetchall()
     overtime_rows = connection.execute("SELECT * FROM codes WHERE kind='overtime' ORDER BY code").fetchall() if kind == "engagement" else []
-    auditors = connection.execute("SELECT * FROM auditors ORDER BY initials").fetchall() if kind == "engagement" else []
+    auditors = connection.execute("SELECT auditor AS initials, username AS name, audit_type FROM accounts WHERE role='auditor' AND auditor <> '' ORDER BY auditor").fetchall() if kind == "engagement" else []
     assignments = connection.execute("SELECT * FROM engagement_assignments ORDER BY year DESC, code, auditor").fetchall() if kind == "engagement" else []
     title = "Engagement codes" if kind == "engagement" else "Non-engagement codes" if kind == "admin" else "Overtime engagement codes"
     fields = "<th>Code</th><th>Description</th>" + ("<th>Year</th><th>Annual budget MD</th><th>Budgeted MD / auditor</th>" if kind == "engagement" else "<th>Year</th>" if kind == "overtime" else "")
@@ -534,7 +545,7 @@ def codes_page(tab):
         add_form = ""
     overtime_body = "".join(f"<tr><td>{escape(row['code'])}</td><td>{escape(row['description'])}</td><td>{row['year']}</td></tr>" for row in overtime_rows)
     overtime_table = f"<section><h3>Encoded overtime</h3><p class='muted'>Create overtime codes from the form above by selecting an overtime subcode. They appear here and are available in Time Entry.</p><table><tr><th>Code</th><th>Description / particulars</th><th>Year</th></tr>{overtime_body}</table></section>" if kind == "engagement" else ""
-    assignment_form = "<form class='module-form' method='post' action='" + url_for("assign_engagement") + "'>{csrf_field()}<label>Engagement code<input name='code' placeholder='ITPP-NAPP-H001' required></label><label>Year<input name='year' type='number' value='" + str(date.today().year) + "' required></label><label>Auditor<select name='auditor' required>" + "".join(f"<option value='{a['initials']}'>{a['initials']} {a['name']}</option>" for a in auditors) + "</select></label><button class='btn'>Assign engagement</button></form>" if kind == "engagement" and session.get("role") == "admin" else ""
+    assignment_form = "<form class='module-form' method='post' action='" + url_for("assign_engagement") + "'>{csrf_field()}<label>Engagement code<input name='code' placeholder='ITPP-NAPP-H001' required></label><label>Year<input name='year' type='number' value='" + str(date.today().year) + "' required></label><label>Auditor<select name='auditor' required>" + "".join(f"<option value='{a['initials']}'>{a['initials']} {a['name']} ({AUDIT_TYPE_LABELS.get(a['audit_type'], 'IT Audit')})</option>" for a in auditors) + "</select></label><button class='btn'>Assign engagement</button></form><p class='muted'>IT, Business Process, and Branch Audit engagements can only be assigned to auditors in the matching account group.</p>" if kind == "engagement" and session.get("role") == "admin" else ""
     assignment_body = "".join(f"<tr><td>{escape(row['code'])}</td><td>{row['year']}</td><td>{escape(row['auditor'])}</td>" + (f"<td><form method='post' action='{url_for('delete_assignment')}'>{csrf_field()}<input type='hidden' name='code' value='{escape(row['code'])}'><input type='hidden' name='year' value='{row['year']}'><input type='hidden' name='auditor' value='{escape(row['auditor'])}'><button class='btn danger'>Delete</button></form></td>" if session.get("role") == "admin" else "") + "</tr>" for row in assignments)
     assignment_actions = "<th>Actions</th>" if session.get("role") == "admin" else ""
     assignment_table = f"<section><h3>Engagement assignments</h3><p class='muted'>Assigned auditors see the engagement and its overtime codes in Time Entry. The budget remains in the main Engagements table.</p>{assignment_form}<table><tr><th>Engagement code</th><th>Year</th><th>Auditor</th>{assignment_actions}</tr>{assignment_body}</table></section>" if kind == "engagement" else ""
@@ -689,6 +700,12 @@ def assign_engagement():
     if not exists:
         connection.close()
         return "Engagement code must exist in the Engagements table before assignment.", 400
+    required_audit_type = audit_type_for_engagement(code)
+    account = connection.execute("SELECT audit_type FROM accounts WHERE role='auditor' AND auditor=?", (auditor,)).fetchone()
+    if required_audit_type and (not account or account["audit_type"] != required_audit_type):
+        expected_group = AUDIT_TYPE_LABELS[required_audit_type]
+        connection.close()
+        return f"{code} can only be assigned to an auditor in the {expected_group} account group.", 400
     existing = connection.execute("SELECT auditor FROM engagement_assignments WHERE code=? AND year=?", (code, year)).fetchone()
     if existing and existing["auditor"] != auditor:
         connection.close()
