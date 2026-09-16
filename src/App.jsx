@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo, useCallback } from "react";
 
 const MD_PER_SLOT = 0.125;
 const DEFAULT_ADMIN_USERNAME = "admin";
+const DEFAULT_ADMIN_PASSWORD = "ChangeMe123!";
 
 const TIME_SLOTS = Array.from({ length: 18 }, (_, i) => {
   const start = i + 6;
@@ -136,33 +137,6 @@ async function saveKey(key, value) {
   }
 }
 
-async function serverSync(key, value) {
-  try {
-    const res = await fetch("/api/sync", {
-      method: "POST",
-      credentials: "same-origin",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ key, value }),
-    });
-    if (!res.ok) {
-      throw new Error(`sync failed: ${res.status}`);
-    }
-  } catch (e) {
-    // keep the app usable without silently losing local state
-    console.warn("Server sync failed", e);
-  }
-}
-
-async function loadServerData() {
-  try {
-    const res = await fetch("/api/data", { credentials: "same-origin" });
-    if (!res.ok) return null;
-    return await res.json();
-  } catch (e) {
-    return null;
-  }
-}
-
 const TABS = [
   { id: "entry", label: "Time entry" },
   { id: "engagements", label: "Engagements" },
@@ -178,7 +152,6 @@ export default function App() {
   const [engagements, setEngagements] = useState([]);
   const [adminCodes, setAdminCodes] = useState([]);
   const [auditors, setAuditors] = useState([]);
-  const [engagementAssignments, setEngagementAssignments] = useState([]);
   const [entries, setEntries] = useState({});
   const [selectedAuditor, setSelectedAuditor] = useState("");
   const [weekStart, setWeekStart] = useState(startOfWeek(new Date()));
@@ -188,22 +161,25 @@ export default function App() {
 
   useEffect(() => {
     (async () => {
-      const serverData = await loadServerData();
-      const [eng, adm, aud, assn, ent, acc] = await Promise.all([
-        serverData?.["engagement-codes"] ?? loadKey("engagement-codes", DEFAULT_ENGAGEMENTS),
-        serverData?.["admin-codes"] ?? loadKey("admin-codes", DEFAULT_ADMIN_CODES),
-        serverData?.["auditors"] ?? loadKey("auditors", DEFAULT_AUDITORS),
-        serverData?.["engagement-assignments"] ?? loadKey("engagement-assignments", []),
-        serverData?.["time-entries"] ?? loadKey("time-entries", {}),
-        serverData?.["accounts"] ?? loadKey("accounts", []),
+      const [eng, adm, aud, ent, acc] = await Promise.all([
+        loadKey("engagement-codes", DEFAULT_ENGAGEMENTS),
+        loadKey("admin-codes", DEFAULT_ADMIN_CODES),
+        loadKey("auditors", DEFAULT_AUDITORS),
+        loadKey("time-entries", {}),
+        loadKey("accounts", []),
       ]);
       setEngagements(eng);
       setAdminCodes(adm);
       setAuditors(aud);
-      setEngagementAssignments(assn);
       setEntries(ent);
       if (aud.length) setSelectedAuditor(aud[0].initials);
-      setAccounts(acc);
+      let finalAccounts = acc;
+      if (!acc.length) {
+        const passwordHash = await hashPassword(DEFAULT_ADMIN_PASSWORD);
+        finalAccounts = [{ username: DEFAULT_ADMIN_USERNAME, passwordHash, role: "admin", auditorInitials: "" }];
+        saveKey("accounts", finalAccounts);
+      }
+      setAccounts(finalAccounts);
       setLoading(false);
     })();
   }, []);
@@ -218,54 +194,33 @@ export default function App() {
   const persistEngagements = useCallback((next) => {
     setEngagements(next);
     saveKey("engagement-codes", next);
-    serverSync("engagement-codes", next);
   }, []);
   const persistAdmin = useCallback((next) => {
     setAdminCodes(next);
     saveKey("admin-codes", next);
-    serverSync("admin-codes", next);
   }, []);
   const persistAuditors = useCallback((next) => {
     setAuditors(next);
     saveKey("auditors", next);
-    serverSync("auditors", next);
   }, []);
   const persistEntries = useCallback((next) => {
     setEntries(next);
     saveKey("time-entries", next);
-    serverSync("time-entries", next);
   }, []);
   const persistAccounts = useCallback((next) => {
     setAccounts(next);
     saveKey("accounts", next);
-    serverSync("accounts", next);
   }, []);
 
   async function handleLogin(username, password) {
-    try {
-      const res = await fetch("/api/login_json", {
-        method: "POST",
-        credentials: "same-origin",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username, password }),
-      });
-      if (!res.ok) return false;
-      const payload = await res.json();
-      setCurrentUser({ username: payload.username, role: payload.role, auditorInitials: payload.auditor || "" });
-      if (payload.role === "auditor" && payload.auditor) setSelectedAuditor(payload.auditor);
-      const serverData = await loadServerData();
-      if (serverData) {
-        if (serverData["engagement-codes"]) setEngagements(serverData["engagement-codes"]);
-        if (serverData["admin-codes"]) setAdminCodes(serverData["admin-codes"]);
-        if (serverData["auditors"]) setAuditors(serverData["auditors"]);
-        if (serverData["engagement-assignments"]) setEngagementAssignments(serverData["engagement-assignments"]);
-        if (serverData["time-entries"]) setEntries(serverData["time-entries"]);
-        if (serverData["accounts"]) setAccounts(serverData["accounts"]);
-      }
-      return true;
-    } catch (e) {
-      return false;
-    }
+    const passwordHash = await hashPassword(password);
+    const found = accounts.find(
+      (a) => a.username.toLowerCase() === username.trim().toLowerCase() && a.passwordHash === passwordHash
+    );
+    if (!found) return false;
+    setCurrentUser({ username: found.username, role: found.role, auditorInitials: found.auditorInitials || "" });
+    if (found.role === "auditor" && found.auditorInitials) setSelectedAuditor(found.auditorInitials);
+    return true;
   }
   function handleLogout() {
     setCurrentUser(null);
@@ -429,7 +384,6 @@ export default function App() {
           setSlotCode={setSlotCode}
           engagements={engagements}
           adminCodes={adminCodes}
-          engagementAssignments={engagementAssignments}
           canChooseAuditor={canEdit}
         />
       )}
@@ -454,20 +408,11 @@ export default function App() {
   );
 }
 
-function TimeEntryTab({ auditors, selectedAuditor, setSelectedAuditor, weekStart, setWeekStart, weekDates, getSlotCode, setSlotCode, engagements, adminCodes, engagementAssignments, canChooseAuditor }) {
+function TimeEntryTab({ auditors, selectedAuditor, setSelectedAuditor, weekStart, setWeekStart, weekDates, getSlotCode, setSlotCode, engagements, adminCodes, canChooseAuditor }) {
   function shiftWeek(days) {
     const d = new Date(weekStart);
     d.setDate(d.getDate() + days);
     setWeekStart(startOfWeek(d));
-  }
-  function assignedEngagementsForYear(year) {
-    if (!selectedAuditor) return [];
-    const match = new Set(
-      engagementAssignments
-        .filter((row) => row.auditor === selectedAuditor && String(row.year) === String(year))
-        .map((row) => row.code)
-    );
-    return engagements.filter((e) => match.has(e.code) && String(e.year || "") === String(year));
   }
   return (
     <div>
@@ -511,7 +456,7 @@ function TimeEntryTab({ auditors, selectedAuditor, setSelectedAuditor, weekStart
             <tbody>
               {weekDates.map((d) => {
                 const dateStr = toDateStr(d);
-                const yearEngagements = assignedEngagementsForYear(d.getFullYear());
+                const yearEngagements = engagements.filter((e) => String(e.year || "") === String(d.getFullYear()));
                 return (
                   <tr key={dateStr}>
                     <td style={{ fontWeight: 500 }}>{formatDisplayDate(d)}</td>
@@ -522,14 +467,10 @@ function TimeEntryTab({ auditors, selectedAuditor, setSelectedAuditor, weekStart
                           onChange={(e) => setSlotCode(selectedAuditor, dateStr, s.id, e.target.value)}
                         >
                           <option value="">—</option>
-                          <optgroup label={`Assigned engagements (${d.getFullYear()})`}>
-                            {yearEngagements.length ? (
-                              yearEngagements.map((e) => (
-                                <option key={e.code} value={e.code}>{e.code}</option>
-                              ))
-                            ) : (
-                              <option value="" disabled>None assigned</option>
-                            )}
+                          <optgroup label={`Engagements (${d.getFullYear()})`}>
+                            {yearEngagements.map((e) => (
+                              <option key={e.code} value={e.code}>{e.code}</option>
+                            ))}
                           </optgroup>
                           <optgroup label="Admin / non-engagement">
                             {adminCodes.map((c) => (
@@ -833,7 +774,6 @@ function ReferenceTab() {
 function LoginScreen({ onLogin }) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
-  const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -862,12 +802,7 @@ function LoginScreen({ onLogin }) {
         <label style={labelStyle}>Username</label>
         <input style={inputStyle} value={username} onChange={(e) => setUsername(e.target.value)} autoFocus />
         <label style={labelStyle}>Password</label>
-        <div style={{ position: "relative" }}>
-          <input style={{ ...inputStyle, paddingRight: 36 }} type={showPassword ? "text" : "password"} value={password} onChange={(e) => setPassword(e.target.value)} />
-          <button type="button" onClick={() => setShowPassword((s) => !s)} aria-label={showPassword ? "Hide password" : "Show password"} style={{ position: "absolute", right: 8, top: "50%", transform: "translateY(-50%)", border: "1px solid #D8D8D2", background: "#fff", borderRadius: 4, cursor: "pointer", fontSize: 14, lineHeight: 1, width: 26, height: 26, display: "flex", alignItems: "center", justifyContent: "center", padding: 0 }}>
-            {showPassword ? "🙈" : "👁"}
-          </button>
-        </div>
+        <input style={inputStyle} type="password" value={password} onChange={(e) => setPassword(e.target.value)} />
         {error && <p style={{ color: "#A32D2D", fontSize: 13, marginTop: -4 }}>{error}</p>}
         <button style={btnStyle} type="submit" disabled={busy}>{busy ? "Signing in…" : "Log in"}</button>
       </form>
@@ -879,13 +814,10 @@ function LoginScreen({ onLogin }) {
 function AccountsTab({ accounts, auditors, onChange, currentUsername }) {
   const [newUsername, setNewUsername] = useState("");
   const [newPassword, setNewPassword] = useState("");
-  const [showNewPassword, setShowNewPassword] = useState(false);
   const [newRole, setNewRole] = useState("auditor");
   const [newAuditorInitials, setNewAuditorInitials] = useState(auditors[0]?.initials || "");
   const [error, setError] = useState("");
   const [resetPw, setResetPw] = useState({});
-  const [showResetPw, setShowResetPw] = useState({});
-  const [showPlainTextPw, setShowPlainTextPw] = useState({});
 
   async function addAccount() {
     setError("");
@@ -936,12 +868,7 @@ function AccountsTab({ accounts, auditors, onChange, currentUsername }) {
           </div>
           <div>
             <label style={{ fontSize: 12, color: "#5A5A54", display: "block", marginBottom: 4 }}>Password</label>
-            <div style={{ position: "relative" }}>
-              <input type={showNewPassword ? "text" : "password"} value={newPassword} onChange={(e) => setNewPassword(e.target.value)} style={{ border: "1px solid #D8D8D2", borderRadius: 4, padding: "6px 8px", paddingRight: 36 }} />
-              <button type="button" onClick={() => setShowNewPassword((s) => !s)} aria-label={showNewPassword ? "Hide password" : "Show password"} style={{ position: "absolute", right: 8, top: "50%", transform: "translateY(-50%)", border: "1px solid #D8D8D2", background: "#fff", borderRadius: 4, cursor: "pointer", fontSize: 14, lineHeight: 1, width: 26, height: 26, display: "flex", alignItems: "center", justifyContent: "center", padding: 0 }}>
-                {showNewPassword ? "🙈" : "👁"}
-              </button>
-            </div>
+            <input type="password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} style={{ border: "1px solid #D8D8D2", borderRadius: 4, padding: "6px 8px" }} />
           </div>
           <div>
             <label style={{ fontSize: 12, color: "#5A5A54", display: "block", marginBottom: 4 }}>Role</label>
@@ -989,36 +916,18 @@ function AccountsTab({ accounts, auditors, onChange, currentUsername }) {
                   <td>{a.auditorInitials || "—"}</td>
                   <td>
                     <div style={{ display: "flex", gap: 4 }}>
-                      <div style={{ position: "relative", flex: 1 }}>
-                        <input
-                          type={showResetPw[a.username] ? "text" : "password"}
-                          placeholder="New password"
-                          value={resetPw[a.username] || ""}
-                          onChange={(e) => setResetPw((prev) => ({ ...prev, [a.username]: e.target.value }))}
-                          style={{ width: "100%", boxSizing: "border-box", paddingRight: 36 }}
-                        />
-                        <button type="button" onClick={() => setShowResetPw((prev) => ({ ...prev, [a.username]: !prev[a.username] }))} aria-label={showResetPw[a.username] ? "Hide password" : "Show password"} style={{ position: "absolute", right: 6, top: "50%", transform: "translateY(-50%)", border: "1px solid #D8D8D2", background: "#fff", borderRadius: 4, cursor: "pointer", fontSize: 14, lineHeight: 1, width: 26, height: 26, display: "flex", alignItems: "center", justifyContent: "center", padding: 0 }}>
-                          {showResetPw[a.username] ? "🙈" : "👁"}
-                        </button>
-                      </div>
+                      <input
+                        type="password"
+                        placeholder="New password"
+                        value={resetPw[a.username] || ""}
+                        onChange={(e) => setResetPw((prev) => ({ ...prev, [a.username]: e.target.value }))}
+                      />
                       <button className="pt-btn secondary" onClick={() => submitReset(a.username)}>Set</button>
                     </div>
                   </td>
                   <td>
-                    <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                      <button type="button" onClick={() => setShowPlainTextPw((prev) => ({ ...prev, [a.username]: !prev[a.username] }))} aria-label={showPlainTextPw[a.username] ? "Hide password" : "Show password"} style={{ border: "1px solid #D8D8D2", background: "#fff", borderRadius: 4, padding: 0, cursor: "pointer", fontSize: 12, width: 26, height: 26, display: "flex", alignItems: "center", justifyContent: "center" }}>
-                        {showPlainTextPw[a.username] ? "🙈" : "👁"}
-                      </button>
-                      {showPlainTextPw[a.username] ? (
-                        <span style={{ fontSize: 12, color: "#17303D", fontFamily: "monospace" }}>{a.passwordText || "—"}</span>
-                      ) : (
-                        <span style={{ fontSize: 12, color: "#888780" }}>Hidden</span>
-                      )}
-                    </div>
                     {a.username !== currentUsername && (
-                      <div style={{ marginTop: 6 }}>
-                        <button className="pt-btn secondary" onClick={() => removeAccount(a.username)}>✕</button>
-                      </div>
+                      <button className="pt-btn secondary" onClick={() => removeAccount(a.username)}>✕</button>
                     )}
                   </td>
                 </tr>
