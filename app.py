@@ -425,7 +425,9 @@ PAGE = """<!doctype html><html lang='en'><head><meta charset='utf-8'><meta name=
 
 
 def render(content, **context):
-    tabs = [("entry", "Time entry"), ("monitoring", "Monitoring"), ("engagements", "Engagements"), ("admin", "Non-engagement codes"), ("auditors", "Auditors")]
+    tabs = [("monitoring", "Monitoring"), ("engagements", "Engagements"), ("admin", "Non-engagement codes"), ("auditors", "Auditors")]
+    if session.get("role") == "auditor":
+        tabs.insert(0, ("entry", "Time entry"))
     if session.get("role") == "admin": tabs.extend([("report", "Report"), ("accounts", "Accounts")])
     context = {**context, "csrf_token": generate_csrf_token()}
     rendered_content = "<style>.entry-grid select{min-width:190px}.entry-grid table{min-width:1500px}</style>" + render_template_string(content, **context)
@@ -457,7 +459,10 @@ def logout():
 @signed_in
 def home():
     tab = request.args.get("tab", "entry")
-    if tab == "entry": return entry_page()
+    if tab == "entry":
+        if session.get("role") != "auditor":
+            return redirect(url_for("home", tab="engagements"))
+        return entry_page()
     if tab == "monitoring": return monitoring_page()
     if tab == "report": return report_page()
     if tab in {"engagements", "admin", "overtime"}: return codes_page(tab)
