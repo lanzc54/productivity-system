@@ -631,13 +631,19 @@ def report_page():
     visible_auditors = [row for row in auditors if row["initials"] == selected_auditor] if selected_auditor else auditors
     prefix = prefix_map.get(audit_type)
     code_rows = connection.execute("SELECT code, description, kind FROM codes ORDER BY kind, code").fetchall()
+    admin_codes = [row["code"] for row in code_rows if row["kind"] == "admin"]
     query = "SELECT auditor, code, COUNT(*) * ? AS md FROM entries WHERE work_date BETWEEN ? AND ?"
     params = [MD_PER_SLOT, start_date.isoformat(), end_date.isoformat()]
     if selected_auditor:
         query += " AND auditor=?"
         params.append(selected_auditor)
     if prefix:
-        query += " AND (code NOT LIKE 'IT%' AND code NOT LIKE 'BP%' AND code NOT LIKE 'BR%' OR code LIKE ?)"
+        if admin_codes:
+            placeholders = ",".join("?" for _ in admin_codes)
+            query += f" AND (code IN ({placeholders}) OR code LIKE ?)"
+            params.extend(admin_codes)
+        else:
+            query += " AND code LIKE ?"
         params.append(f"{prefix}%")
     query += " GROUP BY auditor, code"
     usage_rows = connection.execute(query, params).fetchall()
