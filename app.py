@@ -203,6 +203,12 @@ DEFAULT_ADMIN_CODES = [
     ("SDAY-NAPP-0000", "Suspension Days"),
     ("ADMN-NAPP-0000", "Administrative: Filing / Liquidation / Documentation / TKS Application or Approval / Other Task"),
 ]
+SPECIAL_ENGAGEMENT_CODES = {
+    "BRTL-NAPP-0000": "Branch Operations Audit: Audit Issue Monitoring",
+    "BPTL-NAPP-0000": "Business Process Tracking and Liaison",
+    "ITTL-NAPP-0000": "IT Technical Liaison",
+}
+ADMIN_MAIN_CODE_OPTIONS = sorted({code.split("-")[0] for code, _ in DEFAULT_ADMIN_CODES})
 DEFAULT_AUDITORS = [("CLL", ""), ("LAC", ""), ("JSL", ""), ("LGA", "")]
 AUDIT_TYPE_LABELS = {"it": "IT Audit", "business": "Business Process", "branch": "Branch Audit"}
 MAIN_CODE_OPTIONS = {"RDAY", "HDAY", "LBRK", "CSCY", "TRNG", "BMNG", "ADMN", "NAPP", "VLVE", "SLVE", "OLVE", "SDAY", "ITRA", "ITPP", "ITTL", "ITSP", "BPRA", "BRFA", "BRVA", "BRCC", "BROC", "BRTL", "BRRF", "BRSP"}
@@ -362,6 +368,9 @@ def init_db():
     connection.executemany("INSERT OR IGNORE INTO codes(code, description, kind, year) VALUES (?, ?, 'engagement', ?)", [(c, d, date.today().year) for c, d in ALL_CATALOG_ENGAGEMENTS])
     connection.executemany("INSERT OR IGNORE INTO codes(code, description, kind, year) VALUES (?, ?, 'admin', ?)", [(c, d, date.today().year) for c, d in DEFAULT_ADMIN_CODES])
     connection.executemany("UPDATE codes SET description=? WHERE code=? AND kind='admin' AND year=?", [(description, code, date.today().year) for code, description in DEFAULT_ADMIN_CODES])
+    connection.execute("DELETE FROM codes WHERE kind='admin' AND (code LIKE 'IT-%' OR code LIKE 'BP-%' OR code LIKE 'BR-%')")
+    for code, description in SPECIAL_ENGAGEMENT_CODES.items():
+        connection.execute("INSERT INTO codes(code, description, kind, year) VALUES (?, ?, 'engagement', ?) ON CONFLICT(code, kind, year) DO UPDATE SET description=excluded.description", (code, description, date.today().year))
     catalog_tables = (
         ("it_engagements", [(c, d, date.today().year) for c, d in ALL_CATALOG_ENGAGEMENTS if c.startswith("IT")]),
         ("business_process_engagements", [(c, d, date.today().year) for c, d in ALL_CATALOG_ENGAGEMENTS if c.startswith("BP")]),
@@ -540,7 +549,7 @@ def codes_page(tab):
             section_body = "".join(f"<tr><td>{escape(row['code'])}</td><td>{escape(row['description'])}</td><td>{row['year']}</td><td>{row['annual_budget'] or '-'}</td><td>{row['auditor_budget'] or '-'}</td></tr>" for row in section_rows)
             catalog_sections += f"<section><h3>{section_title}</h3><table><tr><th>Engagement Code</th><th>Name of Engagement</th><th>Year</th><th>Annual budget MD</th><th>Budgeted MD / auditor</th></tr>{section_body}</table></section>"
     code_parts = "<label>Main code<select name='main_code' required><option value=''>Select</option>" + "".join(f"<option>{code}</option>" for code in sorted(MAIN_CODE_OPTIONS)) + "</select></label><label>Sub code<select name='sub_code' required><option value=''>Select</option>" + "".join(f"<option>{code}</option>" for code in sorted(SUB_CODE_OPTIONS)) + "</select></label><label>Series code<input name='series_code' placeholder='H001 / M001 / 0000' required></label>"
-    admin_code_parts = "<label>Main code<select name='main_code' required><option value=''>Select</option>" + "".join(f"<option>{code}</option>" for code in sorted(MAIN_CODE_OPTIONS)) + "</select></label><label>Sub code<select name='sub_code' required><option value='NAPP' selected>NAPP</option></select></label><label>Series code<input name='series_code' value='0000' readonly></label>"
+    admin_code_parts = "<label>Main code<select name='main_code' required><option value=''>Select</option>" + "".join(f"<option>{code}</option>" for code in ADMIN_MAIN_CODE_OPTIONS) + "</select></label><label>Sub code<select name='sub_code' required><option value='NAPP' selected>NAPP</option></select></label><label>Series code<input name='series_code' value='0000' readonly></label>"
     code_input = code_parts if kind in {"engagement", "overtime"} else admin_code_parts
     if session.get("role") == "admin":
         if kind == "engagement":
@@ -690,6 +699,8 @@ def add_code():
     kind = request.form["kind"]
     try:
         code = build_engagement_code(request.form.get("main_code", ""), request.form.get("sub_code", ""), request.form.get("series_code", "")) if kind in {"engagement", "overtime", "admin"} else request.form["code"].strip()
+        if kind == "admin" and request.form.get("main_code", "").strip().upper() not in ADMIN_MAIN_CODE_OPTIONS:
+            return "Use a valid non-engagement main code.", 400
         if kind == "overtime" and code.split("-")[1] not in OVERTIME_SUBCODES:
             return "Overtime codes must use an overtime subcode.", 400
     except ValueError:
