@@ -541,6 +541,8 @@ def codes_page(tab):
     title = "Engagement codes" if kind == "engagement" else "Non-engagement codes" if kind == "admin" else "Overtime engagement codes"
     fields = "<th>Code</th><th>Description</th>" + ("<th>Year</th><th>Annual budget MD</th><th>Budgeted MD / auditor</th>" if kind == "engagement" else "<th>Year</th>" if kind == "overtime" else "")
     body = "".join(f"<tr><td>{escape(row['code'])}</td><td>{escape(row['description'])}</td>" + (f"<td>{row['year']}</td><td>{row['annual_budget'] or '-'}</td><td>{row['auditor_budget'] or '-'}</td>" if kind == "engagement" else f"<td>{row['year']}</td>" if kind == "overtime" else "") + "</tr>" for row in rows)
+    admin_rows = "".join(f"<tr><td>{escape(row['code'])}</td><td>{escape(row['description'])}</td><td>{row['year']}</td><td><form method='post' action='{url_for('delete_code_by_details')}'>{csrf_field()}<input type='hidden' name='kind' value='admin'><input type='hidden' name='code' value='{escape(row['code'])}'><input type='hidden' name='description' value='{escape(row['description'])}'><button class='btn danger'>Delete</button></form></td></tr>" for row in rows) if kind == "admin" else ""
+    admin_table = f"<section><h3>Non-engagement code table</h3><table><tr><th>Code</th><th>Description / particulars</th><th>Year</th><th>Actions</th></tr>{admin_rows or '<tr><td colspan=4>No non-engagement codes recorded</td></tr>'}</table></section>" if kind == "admin" else ""
     catalog_sections = ""
     if kind == "engagement":
         section_specs = (("IT engagements", "IT"), ("Business process engagements", "BP"), ("Branch audit engagements", "BR"))
@@ -566,7 +568,7 @@ def codes_page(tab):
     assignment_body = "".join(f"<tr><td>{escape(row['code'])}</td><td>{row['year']}</td><td>{escape(row['auditor'])}</td>" + (f"<td><form method='post' action='{url_for('delete_assignment')}'>{csrf_field()}<input type='hidden' name='code' value='{escape(row['code'])}'><input type='hidden' name='year' value='{row['year']}'><input type='hidden' name='auditor' value='{escape(row['auditor'])}'><button class='btn danger'>Delete</button></form></td>" if session.get("role") == "admin" else "") + "</tr>" for row in assignments)
     assignment_actions = "<th>Actions</th>" if session.get("role") == "admin" else ""
     assignment_table = f"<section><h3>Engagement assignments</h3><p class='muted'>Assigned auditors see the engagement and its overtime codes in Time Entry. The budget remains in the main Engagements table.</p>{assignment_form}<table><tr><th>Engagement code</th><th>Year</th><th>Auditor</th>{assignment_actions}</tr>{assignment_body}</table></section>" if kind == "engagement" else ""
-    content = f"<div class='card'><h2>{title}</h2>{add_form}{catalog_sections}{overtime_table}{assignment_table}</div>"
+    content = f"<div class='card'><h2>{title}</h2>{add_form}{admin_table}{catalog_sections}{overtime_table}{assignment_table}</div>"
     return render(content)
 
 
