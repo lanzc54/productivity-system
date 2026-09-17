@@ -426,8 +426,7 @@ PAGE = """<!doctype html><html lang='en'><head><meta charset='utf-8'><meta name=
 
 def render(content, **context):
     tabs = [("monitoring", "Monitoring"), ("engagements", "Engagements"), ("admin", "Non-engagement codes"), ("auditors", "Auditors")]
-    if session.get("role") == "auditor":
-        tabs.insert(0, ("entry", "Time entry"))
+    tabs.insert(0, ("entry", "Time entry" if session.get("role") == "auditor" else "Time entries"))
     if session.get("role") == "admin": tabs.extend([("report", "Report"), ("accounts", "Accounts")])
     context = {**context, "csrf_token": generate_csrf_token()}
     rendered_content = "<style>.entry-grid select{min-width:190px}.entry-grid table{min-width:1500px}</style>" + render_template_string(content, **context)
@@ -460,8 +459,6 @@ def logout():
 def home():
     tab = request.args.get("tab", "entry")
     if tab == "entry":
-        if session.get("role") != "auditor":
-            return redirect(url_for("home", tab="engagements"))
         return entry_page()
     if tab == "monitoring": return monitoring_page()
     if tab == "report": return report_page()
@@ -472,7 +469,13 @@ def home():
 
 
 def entry_page():
-    connection = db(); account = connection.execute("SELECT auditor FROM accounts WHERE username=? AND role='auditor'", (session.get("username"),)).fetchone(); codes = connection.execute("SELECT * FROM codes ORDER BY kind, code").fetchall()
+    connection = db()
+    if session.get("role") == "admin":
+        rows = connection.execute("SELECT entries.work_date, entries.slot, entries.auditor, entries.code, codes.description FROM entries LEFT JOIN codes ON codes.code=entries.code AND (codes.year=CAST(substr(entries.work_date,1,4) AS INTEGER) OR codes.kind='admin') ORDER BY entries.work_date DESC, entries.slot, entries.auditor").fetchall()
+        body = "".join(f"<tr><td>{escape(row['work_date'])}</td><td>{escape(row['slot'])}</td><td>{escape(row['auditor'])}</td><td>{escape(row['code'])}</td><td>{escape(row['description'] or '-')}</td></tr>" for row in rows)
+        connection.close()
+        return render(f"<div class='card'><h2>Time entries</h2><p class='muted'>Read-only view of all auditor time entries.</p><div class='grid'><table><tr><th>Date</th><th>Slot</th><th>Auditor</th><th>Code</th><th>Description</th></tr>{body or '<tr><td colspan=5>No time entries recorded</td></tr>'}</table></div></div>")
+    account = connection.execute("SELECT auditor FROM accounts WHERE username=? AND role='auditor'", (session.get("username"),)).fetchone(); codes = connection.execute("SELECT * FROM codes ORDER BY kind, code").fetchall()
     assignments = {(row["code"], row["year"], row["auditor"]) for row in connection.execute("SELECT code, year, auditor FROM engagement_assignments").fetchall()}
     selected = account["auditor"] if account else ""
     if not selected:
