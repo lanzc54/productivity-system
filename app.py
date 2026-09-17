@@ -188,7 +188,8 @@ BRANCH_AUDIT_ENGAGEMENTS = [
 ]
 CATALOG_ENGAGEMENTS = DEFAULT_ENGAGEMENTS + BUSINESS_PROCESS_ENGAGEMENTS + BRANCH_AUDIT_ENGAGEMENTS
 CATALOG_MAIN_CODES = sorted({code.split("-")[0] for code, _ in CATALOG_ENGAGEMENTS})
-CATALOG_BASE_ENGAGEMENTS = [(f"{main_code}-NAPP-0000", f"{main_code} engagement") for main_code in CATALOG_MAIN_CODES if f"{main_code}-NAPP-0000" not in {code for code, _ in CATALOG_ENGAGEMENTS}]
+EXCLUDED_BASE_ENGAGEMENTS = {"ITPP-NAPP-0000", "BPRA-NAPP-0000"}
+CATALOG_BASE_ENGAGEMENTS = [(f"{main_code}-NAPP-0000", f"{main_code} engagement") for main_code in CATALOG_MAIN_CODES if f"{main_code}-NAPP-0000" not in {code for code, _ in CATALOG_ENGAGEMENTS} and f"{main_code}-NAPP-0000" not in EXCLUDED_BASE_ENGAGEMENTS]
 ALL_CATALOG_ENGAGEMENTS = CATALOG_ENGAGEMENTS + CATALOG_BASE_ENGAGEMENTS
 DEFAULT_ADMIN_CODES = [
     ("RDAY-NAPP-0000", "Restday"),
@@ -369,6 +370,9 @@ def init_db():
     connection.executemany("INSERT OR IGNORE INTO codes(code, description, kind, year) VALUES (?, ?, 'admin', ?)", [(c, d, date.today().year) for c, d in DEFAULT_ADMIN_CODES])
     connection.executemany("UPDATE codes SET description=? WHERE code=? AND kind='admin' AND year=?", [(description, code, date.today().year) for code, description in DEFAULT_ADMIN_CODES])
     connection.execute("DELETE FROM codes WHERE kind='admin' AND (code LIKE 'IT-%' OR code LIKE 'BP-%' OR code LIKE 'BR-%')")
+    connection.execute("DELETE FROM codes WHERE kind='engagement' AND code IN (?, ?)", tuple(EXCLUDED_BASE_ENGAGEMENTS))
+    connection.execute("DELETE FROM it_engagements WHERE engagement_code=?", ("ITPP-NAPP-0000",))
+    connection.execute("DELETE FROM business_process_engagements WHERE engagement_code=?", ("BPRA-NAPP-0000",))
     for code, description in SPECIAL_ENGAGEMENT_CODES.items():
         connection.execute("INSERT INTO codes(code, description, kind, year) VALUES (?, ?, 'engagement', ?) ON CONFLICT(code, kind, year) DO UPDATE SET description=excluded.description", (code, description, date.today().year))
     catalog_tables = (
