@@ -537,7 +537,8 @@ def codes_page(tab):
             section_body = "".join(f"<tr><td>{escape(row['code'])}</td><td>{escape(row['description'])}</td><td>{row['year']}</td><td>{row['annual_budget'] or '-'}</td><td>{row['auditor_budget'] or '-'}</td></tr>" for row in section_rows)
             catalog_sections += f"<section><h3>{section_title}</h3><table><tr><th>Engagement Code</th><th>Name of Engagement</th><th>Year</th><th>Annual budget MD</th><th>Budgeted MD / auditor</th></tr>{section_body}</table></section>"
     code_parts = "<label>Main code<select name='main_code' required><option value=''>Select</option>" + "".join(f"<option>{code}</option>" for code in sorted(MAIN_CODE_OPTIONS)) + "</select></label><label>Sub code<select name='sub_code' required><option value=''>Select</option>" + "".join(f"<option>{code}</option>" for code in sorted(SUB_CODE_OPTIONS)) + "</select></label><label>Series code<input name='series_code' placeholder='H001 / M001 / 0000' required></label>"
-    code_input = code_parts if kind in {"engagement", "overtime"} else "<label>Code<input name='code' required></label>"
+    admin_code_parts = "<label>Main code<select name='main_code' required><option value=''>Select</option>" + "".join(f"<option>{code}</option>" for code in sorted(MAIN_CODE_OPTIONS)) + "</select></label><label>Sub code<select name='sub_code' required><option value='NAPP' selected>NAPP</option></select></label><label>Series code<input name='series_code' value='0000' readonly></label>"
+    code_input = code_parts if kind in {"engagement", "overtime"} else admin_code_parts
     if session.get("role") == "admin":
         if kind == "engagement":
             add_form = f"<form class='module-form' method='post' action='{url_for('add_code')}'>{csrf_field()}<input type='hidden' name='kind' value='{kind}'>{code_input}<label>Description / particulars<input name='description' required></label><label>Year<input name='year' type='number' value='" + str(date.today().year) + "'></label><label>Budget MD<input name='annual_budget'></label><label>Budget / auditor<input name='auditor_budget'></label><button class='btn'>Add / update</button><button class='btn danger' type='submit' formaction='" + url_for("delete_code_by_details") + "'>Delete</button></form>"
@@ -631,19 +632,14 @@ def report_page():
     visible_auditors = [row for row in auditors if row["initials"] == selected_auditor] if selected_auditor else auditors
     prefix = prefix_map.get(audit_type)
     code_rows = connection.execute("SELECT code, description, kind FROM codes ORDER BY kind, code").fetchall()
-    admin_codes = [row["code"] for row in code_rows if row["kind"] == "admin"]
     query = "SELECT auditor, code, COUNT(*) * ? AS md FROM entries WHERE work_date BETWEEN ? AND ?"
-    params = [MD_PER_SLOT, start_date.isoformat(), end_date.isoformat()]
+    params = [MD_PER_SLOT, start_date.isoformat(), end_date.isoformat(), "RDAY-NAPP-0000", "LBRK-NAPP-0000"]
+    query += " AND code NOT IN (?, ?)"
     if selected_auditor:
         query += " AND auditor=?"
         params.append(selected_auditor)
     if prefix:
-        if admin_codes:
-            placeholders = ",".join("?" for _ in admin_codes)
-            query += f" AND (code IN ({placeholders}) OR code LIKE ?)"
-            params.extend(admin_codes)
-        else:
-            query += " AND code LIKE ?"
+        query += " AND (code NOT LIKE 'IT%' AND code NOT LIKE 'BP%' AND code NOT LIKE 'BR%' OR code LIKE ?)"
         params.append(f"{prefix}%")
     query += " GROUP BY auditor, code"
     usage_rows = connection.execute(query, params).fetchall()
@@ -690,7 +686,7 @@ def add_auditor():
 def add_code():
     kind = request.form["kind"]
     try:
-        code = build_engagement_code(request.form.get("main_code", ""), request.form.get("sub_code", ""), request.form.get("series_code", "")) if kind in {"engagement", "overtime"} else request.form["code"].strip()
+        code = build_engagement_code(request.form.get("main_code", ""), request.form.get("sub_code", ""), request.form.get("series_code", "")) if kind in {"engagement", "overtime", "admin"} else request.form["code"].strip()
         if kind == "overtime" and code.split("-")[1] not in OVERTIME_SUBCODES:
             return "Overtime codes must use an overtime subcode.", 400
     except ValueError:
@@ -744,8 +740,10 @@ def delete_assignment():
 @admin_only
 def delete_code_by_details():
     kind = request.form.get("kind", "engagement")
-    code = request.form["code"].strip()
+    code = request.form.get("code", "").strip()
     description = request.form["description"].strip()
+    if kind in {"engagement", "admin"} and not code:
+        code = build_engagement_code(request.form.get("main_code", ""), request.form.get("sub_code", ""), request.form.get("series_code", ""))
     if kind == "engagement":
         year = int(request.form.get("year", date.today().year))
         connection = db()
