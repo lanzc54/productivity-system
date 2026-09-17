@@ -552,7 +552,8 @@ def codes_page(tab):
             catalog_sections += f"<section><h3>{section_title}</h3><table><tr><th>Engagement Code</th><th>Name of Engagement</th><th>Year</th><th>Annual budget MD</th><th>Budgeted MD / auditor</th></tr>{section_body}</table></section>"
     code_parts = "<label>Main code<select name='main_code' required><option value=''>Select</option>" + "".join(f"<option>{code}</option>" for code in sorted(MAIN_CODE_OPTIONS)) + "</select></label><label>Sub code<select name='sub_code' required><option value=''>Select</option>" + "".join(f"<option>{code}</option>" for code in sorted(SUB_CODE_OPTIONS)) + "</select></label><label>Series code<input name='series_code' placeholder='H001 / M001 / 0000' required></label>"
     admin_code_parts = "<label>Main code<select name='main_code' required><option value=''>Select</option>" + "".join(f"<option>{code}</option>" for code in ADMIN_MAIN_CODE_OPTIONS) + "</select></label><label>Sub code<select name='sub_code' required><option value='NAPP' selected>NAPP</option></select></label><label>Series code<input name='series_code' value='0000' readonly></label>"
-    code_input = code_parts if kind in {"engagement", "overtime"} else admin_code_parts
+    engagement_code_input = "<label>Engagement code<input name='code' placeholder='ITPP-NAPP-H001' required></label>"
+    code_input = engagement_code_input if kind == "engagement" else code_parts if kind == "overtime" else admin_code_parts
     if session.get("role") == "admin":
         if kind == "engagement":
             add_form = f"<form class='module-form' method='post' action='{url_for('add_code')}'>{csrf_field()}<input type='hidden' name='kind' value='{kind}'>{code_input}<label>Description / particulars<input name='description' required></label><label>Year<input name='year' type='number' value='" + str(date.today().year) + "'></label><label>Budget MD<input name='annual_budget'></label><label>Budget / auditor<input name='auditor_budget'></label><button class='btn'>Add / update</button><button class='btn danger' type='submit' formaction='" + url_for("delete_code_by_details") + "'>Delete</button></form>"
@@ -700,7 +701,13 @@ def add_auditor():
 def add_code():
     kind = request.form["kind"]
     try:
-        code = build_engagement_code(request.form.get("main_code", ""), request.form.get("sub_code", ""), request.form.get("series_code", "")) if kind in {"engagement", "overtime", "admin"} else request.form["code"].strip()
+        if kind == "engagement":
+            code_parts = request.form["code"].strip().upper().split("-")
+            if len(code_parts) != 3:
+                raise ValueError
+            code = build_engagement_code(*code_parts)
+        else:
+            code = build_engagement_code(request.form.get("main_code", ""), request.form.get("sub_code", ""), request.form.get("series_code", "")) if kind in {"overtime", "admin"} else request.form["code"].strip()
         if kind == "admin" and request.form.get("main_code", "").strip().upper() not in ADMIN_MAIN_CODE_OPTIONS:
             return "Use a valid non-engagement main code.", 400
         if kind == "overtime" and code.split("-")[1] not in OVERTIME_SUBCODES:
