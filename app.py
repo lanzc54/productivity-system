@@ -620,26 +620,28 @@ def report_page():
 
     audit_type = request.args.get("audit_type", "all").lower()
     prefix_map = {"it": "IT", "business": "BP", "branch": "BR"}
-    prefix = prefix_map.get(audit_type)
-    code_filter = request.args.get("code", "all").strip().upper()
-    code_rows = connection.execute("SELECT code, description, kind FROM codes ORDER BY kind, code").fetchall()
-    if prefix:
-        code_rows = [row for row in code_rows if row["code"].startswith(prefix)]
-    valid_codes = {row["code"] for row in code_rows}
-    if code_filter not in valid_codes:
-        code_filter = "all"
     auditors = connection.execute("SELECT auditor AS initials, username AS name, audit_type FROM accounts WHERE role='auditor' AND auditor <> '' ORDER BY auditor").fetchall()
+    selected_auditor = request.args.get("auditor", "").strip().upper()
+    if session.get("role") == "auditor":
+        selected_auditor = session.get("auditor", "")
+        account = next((row for row in auditors if row["initials"] == selected_auditor), None)
+        audit_type = account["audit_type"] if account else "all"
+    elif selected_auditor not in {row["initials"] for row in auditors}:
+        selected_auditor = ""
+    visible_auditors = [row for row in auditors if row["initials"] == selected_auditor] if selected_auditor else auditors
+    prefix = prefix_map.get(audit_type)
+    code_rows = connection.execute("SELECT code, description, kind FROM codes ORDER BY kind, code").fetchall()
     query = "SELECT auditor, code, COUNT(*) * ? AS md FROM entries WHERE work_date BETWEEN ? AND ?"
     params = [MD_PER_SLOT, start_date.isoformat(), end_date.isoformat()]
+    if selected_auditor:
+        query += " AND auditor=?"
+        params.append(selected_auditor)
     if prefix:
-        query += " AND code LIKE ?"
-        params.append(f"{prefix}-%")
-    if code_filter != "all":
-        query += " AND code=?"
-        params.append(code_filter)
+        query += " AND (code NOT LIKE 'IT%' AND code NOT LIKE 'BP%' AND code NOT LIKE 'BR%' OR code LIKE ?)"
+        params.append(f"{prefix}%")
     query += " GROUP BY auditor, code"
     usage_rows = connection.execute(query, params).fetchall()
-    totals = {row["initials"]: 0 for row in auditors}
+    totals = {row["initials"]: 0 for row in visible_auditors}
     code_totals = {}
     for row in usage_rows:
         totals[row["auditor"]] = totals.get(row["auditor"], 0) + row["md"]
@@ -650,7 +652,7 @@ def report_page():
     chart_bars = []
     bar_width = max(36, min(90, 700 // max(1, len(totals))))
     chart_gap = 700 / max(1, len(totals))
-    for index, auditor in enumerate(auditors):
+    for index, auditor in enumerate(visible_auditors):
         initials = auditor["initials"]
         value = totals.get(initials, 0)
         bar_height = 0 if not max_total else (value / max_total) * (chart_bottom - chart_top)
@@ -658,11 +660,12 @@ def report_page():
         y = chart_bottom - bar_height
         chart_bars.append(f"<rect x='{x:.1f}' y='{y:.1f}' width='{bar_width}' height='{bar_height:.1f}' rx='4' fill='#087f71'><title>{escape(initials)}: {value:.3f} MD</title></rect><text x='{x + bar_width / 2:.1f}' y='{max(22, y - 8):.1f}' text-anchor='middle' class='chart-value'>{value:.3f}</text><text x='{x + bar_width / 2:.1f}' y='298' text-anchor='middle' class='chart-label'>{escape(initials)}</text>")
     chart = f"<svg class='report-chart' viewBox='0 0 {chart_width} {chart_height}' role='img' aria-label='Engagement usage in man-days per auditor'><line x1='90' y1='{chart_bottom}' x2='850' y2='{chart_bottom}' class='chart-axis'/><line x1='90' y1='{chart_top}' x2='90' y2='{chart_bottom}' class='chart-axis'/><text x='18' y='42' class='chart-axis-label'>MD</text>{''.join(chart_bars) if chart_bars else '<text x="450" y="160" text-anchor="middle" class="chart-empty">No engagement usage in this date range</text>'}</svg>"
-    chart_rows = "".join(f"<tr><td>{escape(row['initials'])}</td><td>{escape(row['name'] or '-')}</td><td>{escape(AUDIT_TYPE_LABELS.get(row['audit_type'], 'IT Audit'))}</td><td>{totals.get(row['initials'], 0):.3f}</td></tr>" for row in auditors)
+    chart_rows = "".join(f"<tr><td>{escape(row['initials'])}</td><td>{escape(row['name'] or '-')}</td><td>{escape(AUDIT_TYPE_LABELS.get(row['audit_type'], 'IT Audit'))}</td><td>{totals.get(row['initials'], 0):.3f}</td></tr>" for row in visible_auditors)
     code_breakdown = "".join(f"<tr><td>{escape(code)}</td><td>{escape(next((row['description'] for row in code_rows if row['code'] == code), '-'))}</td><td>{value:.3f}</td></tr>" for code, value in sorted(code_totals.items()) if code in engagement_codes)
     non_engagement_breakdown = "".join(f"<tr><td>{escape(code)}</td><td>{escape(next((row['description'] for row in code_rows if row['code'] == code), '-'))}</td><td>{value:.3f}</td></tr>" for code, value in sorted(code_totals.items()) if code not in engagement_codes)
-    code_options = "".join(f"<option value='{escape(row['code'])}' {'selected' if code_filter == row['code'] else ''}>{escape(row['code'])} - {escape(row['description'])}</option>" for row in code_rows)
-    filter_form = f"<form method='get' class='module-form'><input type='hidden' name='tab' value='report'><label>Audit engagement type<select name='audit_type' onchange='this.form.submit()'><option value='all' {'selected' if audit_type == 'all' else ''}>All</option><option value='it' {'selected' if audit_type == 'it' else ''}>IT Audit</option><option value='business' {'selected' if audit_type == 'business' else ''}>Business Audit</option><option value='branch' {'selected' if audit_type == 'branch' else ''}>Branch Audit</option></select></label><label>Engagement code<select name='code'><option value='all'>All engagements</option>{code_options}</select></label><label>Start date<input type='date' name='start' value='{start_date.isoformat()}' required></label><label>End date<input type='date' name='end' value='{end_date.isoformat()}' required></label><button class='btn'>Generate report</button></form>"
+    auditor_options = "".join(f"<option value='{escape(row['initials'])}' {'selected' if selected_auditor == row['initials'] else ''}>{escape(row['initials'])} ({escape(row['name'])})</option>" for row in auditors)
+    group_options = "".join(f"<option value='{value}' {'selected' if audit_type == value else ''}>{label}</option>" for value, label in (("all", "All groups"), *AUDIT_TYPE_LABELS.items()))
+    filter_form = f"<form method='get' class='module-form'><input type='hidden' name='tab' value='report'><label>Auditor<select name='auditor' {'disabled' if session.get('role') == 'auditor' else ''}><option value=''>All auditors</option>{auditor_options}</select></label><label>Audit group<select name='audit_type' {'disabled' if session.get('role') == 'auditor' else ''}>{group_options}</select></label><label>Start date<input type='date' name='start' value='{start_date.isoformat()}' required></label><label>End date<input type='date' name='end' value='{end_date.isoformat()}' required></label><button class='btn'>Generate report</button></form>"
     content = f"<div class='card'><h2>Usage report</h2><p class='muted'>Man-days recorded per auditor for the selected date range.</p>{filter_form}<div class='report-chart-wrap'>{chart}</div><div class='report-grid'><section><h3>Usage by auditor</h3><table><tr><th>Auditor</th><th>Name</th><th>Auditor group</th><th>Total MD</th></tr>{chart_rows}</table></section><section><h3>Engagement usage</h3><table><tr><th>Code</th><th>Engagement</th><th>Total MD</th></tr>{code_breakdown or '<tr><td colspan=3>No engagement usage recorded</td></tr>'}</table><h3>Non-engagement usage</h3><table><tr><th>Code</th><th>Description</th><th>Total MD</th></tr>{non_engagement_breakdown or '<tr><td colspan=3>No non-engagement usage recorded</td></tr>'}</table></section></div></div>"
     connection.close()
     return render(content)
