@@ -467,21 +467,19 @@ def home():
 
 
 def entry_page():
-    connection = db(); account = connection.execute("SELECT auditor FROM accounts WHERE username=? AND role='auditor'", (session.get("username"),)).fetchone(); codes = connection.execute("SELECT * FROM codes ORDER BY kind, code").fetchall()
+    connection = db(); account = connection.execute("SELECT auditor FROM accounts WHERE username=? AND role='auditor'", (session.get("username"),)).fetchone(); auditor_accounts = connection.execute("SELECT auditor, username FROM accounts WHERE role='auditor' AND auditor <> '' ORDER BY auditor").fetchall(); codes = connection.execute("SELECT * FROM codes ORDER BY kind, code").fetchall()
     assignments = {(row["code"], row["year"], row["auditor"]) for row in connection.execute("SELECT code, year, auditor FROM engagement_assignments").fetchall()}
-    selected = account["auditor"] if account else ""
-    if not selected:
-        connection.close()
-        return render("<div class='card'><h2>Time entry</h2><p class='muted'>Time entry is available only through an auditor account linked to auditor initials in Accounts.</p></div>")
+    selected = account["auditor"] if account else (request.args.get("auditor", "").strip().upper() if session.get("role") == "admin" else "")
     start = week_start(request.args.get("week")); days = [start + timedelta(days=i) for i in range(7)]; slots = [f"{h}-{h+1}" for h in range(6, 24)]
     default_entries = []
     for day in days:
         default_entries.append((selected, day.isoformat(), "12-13", "LBRK-NAPP-0000"))
         if day.weekday() >= 5:
             default_entries.extend((selected, day.isoformat(), slot, "RDAY-NAPP-0000") for slot in slots if slot != "12-13")
-    connection.executemany("INSERT OR IGNORE INTO entries(auditor, work_date, slot, code) VALUES (?, ?, ?, ?)", default_entries)
+    if selected:
+        connection.executemany("INSERT OR IGNORE INTO entries(auditor, work_date, slot, code) VALUES (?, ?, ?, ?)", default_entries)
     connection.commit()
-    values = {(r["work_date"], r["slot"]): r["code"] for r in connection.execute("SELECT * FROM entries WHERE auditor=? AND work_date BETWEEN ? AND ?", (selected, days[0].isoformat(), days[-1].isoformat()))}
+    values = {(r["work_date"], r["slot"]): r["code"] for r in connection.execute("SELECT * FROM entries WHERE auditor=? AND work_date BETWEEN ? AND ?", (selected, days[0].isoformat(), days[-1].isoformat())).fetchall()} if selected else {}
     entry_codes = []
     for code in codes:
         if code["year"] == days[0].year:
@@ -493,8 +491,8 @@ def entry_page():
             parts = code["code"].split("-")
             if len(parts) == 3 and parts[1] == "NAPP" and code["kind"] == "engagement" and (session.get("role") == "admin" or assigned):
                 entry_codes.extend(f"{parts[0]}-{subcode}-{parts[2]}" for subcode in sorted(OVERTIME_SUBCODES))
-    content = """<div class='card'><h2>Time entry</h2><p class='muted'>Each hour counts as 0.125 MD. Overtime codes are available for registered engagements.</p><div class='grid entry-grid'><table><tr><th>Date</th>{% for slot in slots %}<th>{{slot}}</th>{% endfor %}</tr>{% for day in days %}<tr><td><b>{{day.strftime('%a')}}</b><br>{{day.isoformat()}}</td>{% for slot in slots %}<td><form method='post' action='{{url_for("save_entry")}}'><input type='hidden' name='csrf_token' value='{{ csrf_token }}'><input type='hidden' name='work_date' value='{{day.isoformat()}}'><input type='hidden' name='slot' value='{{slot}}'><select name='code' onchange='this.form.submit()' title='{{values.get((day.isoformat(),slot), "")}}'><option value=''>-</option>{% for code in entry_codes %}<option value='{{code}}' {% if values.get((day.isoformat(),slot))==code %}selected{% endif %}>{{code}}</option>{% endfor %}</select></form></td>{% endfor %}</tr>{% endfor %}</table></div></div>"""
-    return render(content, codes=codes, entry_codes=entry_codes, selected=selected, days=days, slots=slots, values=values, role=session.get("role"))
+    content = """<div class='card'><h2>Time entry</h2>{% if role == 'admin' %}<form method='get'><input type='hidden' name='tab' value='entry'><label>Auditor<select name='auditor' onchange='this.form.submit()'><option value=''>Select auditor account</option>{% for account in auditor_accounts %}<option value='{{account.auditor}}' {% if account.auditor==selected %}selected{% endif %}>{{account.auditor}} ({{account.username}})</option>{% endfor %}</select></label></form>{% endif %}<p class='muted'>Each hour counts as 0.125 MD. Overtime codes are available for registered engagements.</p><div class='grid entry-grid'><table><tr><th>Date</th>{% for slot in slots %}<th>{{slot}}</th>{% endfor %}</tr>{% for day in days %}<tr><td><b>{{day.strftime('%a')}}</b><br>{{day.isoformat()}}</td>{% for slot in slots %}<td><form method='post' action='{{url_for("save_entry")}}'><input type='hidden' name='csrf_token' value='{{ csrf_token }}'><input type='hidden' name='work_date' value='{{day.isoformat()}}'><input type='hidden' name='slot' value='{{slot}}'><select name='code' onchange='this.form.submit()' title='{{values.get((day.isoformat(),slot), "")}}'><option value=''>-</option>{% for code in entry_codes %}<option value='{{code}}' {% if values.get((day.isoformat(),slot))==code %}selected{% endif %}>{{code}}</option>{% endfor %}</select></form></td>{% endfor %}</tr>{% endfor %}</table></div></div>"""
+    return render(content, auditor_accounts=auditor_accounts, codes=codes, entry_codes=entry_codes, selected=selected, days=days, slots=slots, values=values, role=session.get("role"))
 
 
 @app.post("/entry")
