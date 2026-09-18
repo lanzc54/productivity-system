@@ -412,8 +412,12 @@ function TimeEntryTab({ auditors, selectedAuditor, setSelectedAuditor, weekStart
     d.setDate(d.getDate() + days);
     setWeekStart(startOfWeek(d));
   }
+  const suggestionCodes = [...engagements.map((engagement) => engagement.code), ...adminCodes.map((code) => code.code)];
   return (
     <div>
+      <datalist id="entry-code-suggestions">
+        {suggestionCodes.map((code) => <option key={code} value={code} />)}
+      </datalist>
       <div style={{ display: "flex", gap: 16, alignItems: "center", marginBottom: 16, flexWrap: "wrap" }}>
         <div>
           <label style={{ fontSize: 12, color: "#5A5A54", display: "block", marginBottom: 4 }}>Auditor</label>
@@ -460,22 +464,12 @@ function TimeEntryTab({ auditors, selectedAuditor, setSelectedAuditor, weekStart
                     <td style={{ fontWeight: 500 }}>{formatDisplayDate(d)}</td>
                     {TIME_SLOTS.map((s) => (
                       <td key={s.id}>
-                        <select
-                          value={getSlotCode(selectedAuditor, dateStr, s.id)}
-                          onChange={(e) => setSlotCode(selectedAuditor, dateStr, s.id, e.target.value)}
-                        >
+                        <select value={getSlotCode(selectedAuditor, dateStr, s.id)} onChange={(e) => setSlotCode(selectedAuditor, dateStr, s.id, e.target.value)}>
                           <option value="">—</option>
-                          <optgroup label={`Engagements (${d.getFullYear()})`}>
-                            {yearEngagements.map((e) => (
-                              <option key={e.code} value={e.code}>{e.code}</option>
-                            ))}
-                          </optgroup>
-                          <optgroup label="Admin / non-engagement">
-                            {adminCodes.map((c) => (
-                              <option key={c.code} value={c.code}>{c.code}</option>
-                            ))}
-                          </optgroup>
+                          <optgroup label={`Engagements (${d.getFullYear()})`}>{yearEngagements.map((e) => <option key={e.code} value={e.code}>{e.code}</option>)}</optgroup>
+                          <optgroup label="Admin / non-engagement">{adminCodes.map((c) => <option key={c.code} value={c.code}>{c.code}</option>)}</optgroup>
                         </select>
+                        <input list="entry-code-suggestions" value={getSlotCode(selectedAuditor, dateStr, s.id)} onChange={(e) => setSlotCode(selectedAuditor, dateStr, s.id, e.target.value)} placeholder="Type code" aria-label="Type engagement code" />
                       </td>
                     ))}
                   </tr>
