@@ -608,19 +608,23 @@ def monitoring_page():
         key = (engagement_base_code(row["code"]), row["auditor"])
         totals[key] = totals.get(key, 0) + row["md"]
     actual_header = "".join(f"<th>Actual Budget MDs ({a['initials']})</th>" for a in visible_auditors)
-    body_rows = []
-    for row in codes:
-        budget = float(row["auditor_budget"]) if row["auditor_budget"] is not None else None
-        actual_cells = "".join(f"<td>{totals.get((row['code'], a['initials']), 0):.3f}</td>" for a in visible_auditors)
-        total_actual = sum(totals.get((row["code"], a["initials"]), 0) for a in visible_auditors)
-        variance = "-" if budget is None or total_actual == 0 else f"{budget - total_actual:.3f}"
-        body_rows.append(f"<tr><td>{row['code']}</td><td>{row['description']}</td><td>{row['annual_budget'] or '-'}</td><td>{row['auditor_budget'] or '-'}</td>{actual_cells}<td>{variance}</td></tr>")
-    body = "".join(body_rows)
+    table_sections = []
+    for audit_type, label in AUDIT_TYPE_LABELS.items():
+        group_rows = []
+        for row in codes:
+            if audit_type_for_engagement(row["code"]) != audit_type:
+                continue
+            budget = float(row["auditor_budget"]) if row["auditor_budget"] is not None else None
+            actual_cells = "".join(f"<td>{totals.get((row['code'], a['initials']), 0):.3f}</td>" for a in visible_auditors)
+            total_actual = sum(totals.get((row["code"], a["initials"]), 0) for a in visible_auditors)
+            variance = "-" if budget is None or total_actual == 0 else f"{budget - total_actual:.3f}"
+            group_rows.append(f"<tr><td>{row['code']}</td><td>{row['description']}</td><td>{row['annual_budget'] or '-'}</td><td>{row['auditor_budget'] or '-'}</td>{actual_cells}<td>{variance}</td></tr>")
+        table_sections.append(f"<section><h3>{label}</h3><div class='grid'><table><tr><th>Code</th><th>Description</th><th>Annual budget MD</th><th>Budgeted MD / auditor</th>{actual_header}<th>Variance</th></tr>{''.join(group_rows) or '<tr><td colspan=99>No engagements in this audit group.</td></tr>'}</table></div></section>")
     admin_header = "".join(f"<th>{a['initials']} MD used</th>" for a in visible_auditors)
     admin_body = "".join("<tr><td>{}</td><td>{}</td>{}<td>{:.3f}</td></tr>".format(row["code"], row["description"], "".join(f"<td>{totals.get((row['code'], a['initials']), 0):.3f}</td>" for a in visible_auditors), sum(totals.get((row["code"], a["initials"]), 0) for a in visible_auditors)) for row in admin_codes)
     year_picker = "<form method='get' class='module-form'><input type='hidden' name='tab' value='monitoring'><label>Year<select name='year' onchange='this.form.submit()'>" + "".join(f"<option value='{option}' {'selected' if option == year else ''}>{option}</option>" for option in sorted(years, reverse=True)) + "</select></label></form>"
     variance_description = "Variance = Budgeted MD / auditor - your actual MD." if session.get("role") == "auditor" else "Variance = Budgeted MD / auditor - total actual MD across auditors."
-    content = f"<div class='card'><h2>Monitoring</h2>{year_picker}<p class='muted'>{variance_description}</p><div class='grid'><table><tr><th>Code</th><th>Description</th><th>Annual budget MD</th><th>Budgeted MD / auditor</th>{actual_header}<th>Variance</th></tr>{body}</table></div></div><div class='card'><h2>Engagement usage</h2><p class='muted'>Time entered against leave, lunch, training, meetings, and other non-budgeted codes.</p><div class='grid'><table><tr><th>Code</th><th>Description</th>{admin_header}<th>Total MD used</th></tr>{admin_body}</table></div></div>"
+    content = f"<div class='card'><h2>Monitoring</h2>{year_picker}<p class='muted'>{variance_description}</p>{''.join(table_sections)}</div><div class='card'><h2>Engagement usage</h2><p class='muted'>Time entered against leave, lunch, training, meetings, and other non-budgeted codes.</p><div class='grid'><table><tr><th>Code</th><th>Description</th>{admin_header}<th>Total MD used</th></tr>{admin_body}</table></div></div>"
     return render(content)
 
 

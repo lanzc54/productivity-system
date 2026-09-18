@@ -105,6 +105,11 @@ function formatDisplayDate(d) {
 function round2(n) {
   return Math.round((n + Number.EPSILON) * 100) / 100;
 }
+function auditTypeForCode(code) {
+  if (code.startsWith("BP")) return "business";
+  if (code.startsWith("BR")) return "branch";
+  return "it";
+}
 async function hashPassword(pw) {
   const enc = new TextEncoder().encode(pw);
   const buf = await crypto.subtle.digest("SHA-256", enc);
@@ -286,7 +291,7 @@ export default function App() {
     engagements
       .filter((e) => String(e.year || "") === String(selectedYear))
       .forEach((e) => {
-        totals[e.code] = { code: e.code, description: e.description, annualBudgetMD: e.annualBudgetMD, auditorBudgetMD: e.auditorBudgetMD, byAuditor: {} };
+        totals[e.code] = { code: e.code, description: e.description, annualBudgetMD: e.annualBudgetMD, auditorBudgetMD: e.auditorBudgetMD, auditType: auditTypeForCode(e.code), byAuditor: {} };
         auditors.forEach((a) => (totals[e.code].byAuditor[a.initials] = 0));
       });
     Object.entries(entries).forEach(([key, slots]) => {
@@ -627,6 +632,11 @@ function AuditorsTab({ auditors, onChange, readOnly }) {
 }
 
 function MonitoringTab({ rows, adminRows, auditors, availableYears, selectedYear, setSelectedYear }) {
+  const groups = [
+    ["it", "IT Audit"],
+    ["business", "Business Process"],
+    ["branch", "Branch Audit"],
+  ];
   return (
     <div>
       <div className="pt-card">
@@ -644,7 +654,10 @@ function MonitoringTab({ rows, adminRows, auditors, availableYears, selectedYear
         <p style={{ fontSize: 12, color: "#888780", marginTop: 0, marginBottom: 12 }}>
           Actual MD is calculated automatically from Time entry, scoped to engagements and dates in {selectedYear}. Variance = annual budget MD − total actual MD.
         </p>
-        <div style={{ overflowX: "auto" }}>
+        {groups.map(([type, label]) => (
+          <section key={type} style={{ marginBottom: 18 }}>
+            <h4 style={{ margin: "0 0 8px", fontSize: 14, fontWeight: 600 }}>{label}</h4>
+            <div style={{ overflowX: "auto" }}>
           <table className="pt-table">
             <thead>
               <tr>
@@ -660,7 +673,7 @@ function MonitoringTab({ rows, adminRows, auditors, availableYears, selectedYear
               </tr>
             </thead>
             <tbody>
-              {rows.map((row) => (
+              {rows.filter((row) => row.auditType === type).map((row) => (
                 <tr key={row.code}>
                   <td style={{ fontFamily: "monospace", fontSize: 12 }}>{row.code}</td>
                   <td>{row.description}</td>
@@ -677,7 +690,9 @@ function MonitoringTab({ rows, adminRows, auditors, availableYears, selectedYear
               ))}
             </tbody>
           </table>
-        </div>
+            </div>
+          </section>
+        ))}
       </div>
 
       <div className="pt-card">
