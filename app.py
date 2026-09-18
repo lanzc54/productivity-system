@@ -210,7 +210,6 @@ SPECIAL_ENGAGEMENT_CODES = {
     "ITTL-NAPP-0000": "IT Technical Liaison",
 }
 ADMIN_MAIN_CODE_OPTIONS = sorted({code.split("-")[0] for code, _ in DEFAULT_ADMIN_CODES})
-DEFAULT_AUDITORS = [("CLL", ""), ("LAC", ""), ("JSL", ""), ("LGA", "")]
 AUDIT_TYPE_LABELS = {"it": "IT Audit", "business": "Business Process", "branch": "Branch Audit"}
 MAIN_CODE_OPTIONS = {"RDAY", "HDAY", "LBRK", "CSCY", "TRNG", "BMNG", "ADMN", "NAPP", "VLVE", "SLVE", "OLVE", "SDAY", "ITRA", "ITPP", "ITTL", "ITSP", "BPRA", "BRFA", "BRVA", "BRCC", "BROC", "BRTL", "BRRF", "BRSP"}
 SUB_CODE_OPTIONS = {"OTRD", "OTHD", "OTEH", "TYRD", "TYHD", "TYEH", "NAPP"}
@@ -316,7 +315,7 @@ def csrf_field():
 def seed_year_weekends(connection, year):
     start = date(year, 1, 1)
     end = date(year + 1, 1, 1)
-    auditors = connection.execute("SELECT initials FROM auditors").fetchall()
+    auditors = connection.execute("SELECT auditor AS initials FROM accounts WHERE role='auditor' AND auditor <> ''").fetchall()
     slots = [f"{hour}-{hour + 1}" for hour in range(6, 24)]
     current = start
     while current < end:
@@ -361,8 +360,7 @@ def init_db():
 
     if connection.execute("SELECT COUNT(*) FROM accounts").fetchone()[0] == 0:
         connection.execute("INSERT INTO accounts(username, password_hash, role, auditor, audit_type) VALUES (?, ?, 'admin', '', 'it')", ("admin", password_hash("ChangeMe123!")))
-    if connection.execute("SELECT COUNT(*) FROM auditors").fetchone()[0] == 0:
-        connection.executemany("INSERT INTO auditors(initials, name, audit_type) VALUES (?, ?, 'it')", DEFAULT_AUDITORS)
+    connection.execute("DELETE FROM auditors WHERE NOT EXISTS (SELECT 1 FROM accounts WHERE accounts.role='auditor' AND accounts.auditor=auditors.initials)")
     if connection.execute("SELECT COUNT(*) FROM codes").fetchone()[0] == 0:
         connection.executemany("INSERT INTO codes(code, description, kind, year) VALUES (?, ?, 'engagement', ?)", [(c, d, date.today().year) for c, d in ALL_CATALOG_ENGAGEMENTS])
         connection.executemany("INSERT INTO codes(code, description, kind, year) VALUES (?, ?, 'admin', ?)", [(c, d, date.today().year) for c, d in DEFAULT_ADMIN_CODES])
@@ -592,7 +590,7 @@ def auditors_page():
 
 def monitoring_page():
     connection = db(); year = int(request.args.get("year", date.today().year))
-    auditors = connection.execute("SELECT * FROM auditors ORDER BY initials").fetchall()
+    auditors = connection.execute("SELECT auditor AS initials, username AS name, audit_type FROM accounts WHERE role='auditor' AND auditor <> '' ORDER BY auditor").fetchall()
     visible_auditors = [a for a in auditors if a["initials"] == session.get("auditor")] if session.get("role") == "auditor" else auditors
     years = [row["year"] for row in connection.execute("SELECT DISTINCT year FROM codes WHERE kind='engagement' ORDER BY year DESC").fetchall()]
     if year not in years: years.append(year)

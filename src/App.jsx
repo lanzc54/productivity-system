@@ -62,13 +62,6 @@ const DEFAULT_ADMIN_CODES = [
   ["ITSP-NAPP-0000", "IT special audit"],
 ].map(([code, description]) => ({ code, description }));
 
-const DEFAULT_AUDITORS = [
-  { initials: "CLL", name: "" },
-  { initials: "LAC", name: "" },
-  { initials: "JSL", name: "" },
-  { initials: "LGA", name: "" },
-];
-
 const MAIN_CODES = [
   ["RDAY", "Restday"], ["HDAY", "Holiday"], ["LBRK", "Lunch break"],
   ["CSCY", "Consultancy: facilitation, documentation, review of procedures/contracts, other client tasks"],
@@ -164,7 +157,7 @@ export default function App() {
       const [eng, adm, aud, ent, acc] = await Promise.all([
         loadKey("engagement-codes", DEFAULT_ENGAGEMENTS),
         loadKey("admin-codes", DEFAULT_ADMIN_CODES),
-        loadKey("auditors", DEFAULT_AUDITORS),
+        loadKey("auditors", []),
         loadKey("time-entries", {}),
         loadKey("accounts", []),
       ]);
@@ -209,6 +202,11 @@ export default function App() {
   }, []);
   const persistAccounts = useCallback((next) => {
     setAccounts(next);
+    const nextAuditors = next
+      .filter((account) => account.role === "auditor" && account.auditorInitials)
+      .map((account) => ({ initials: account.auditorInitials, name: "" }));
+    setAuditors(nextAuditors);
+    saveKey("auditors", nextAuditors);
     saveKey("accounts", next);
   }, []);
 
@@ -815,7 +813,7 @@ function AccountsTab({ accounts, auditors, onChange, currentUsername }) {
   const [newUsername, setNewUsername] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [newRole, setNewRole] = useState("auditor");
-  const [newAuditorInitials, setNewAuditorInitials] = useState(auditors[0]?.initials || "");
+  const [newAuditorInitials, setNewAuditorInitials] = useState("");
   const [error, setError] = useState("");
   const [resetPw, setResetPw] = useState({});
 
@@ -831,18 +829,20 @@ function AccountsTab({ accounts, auditors, onChange, currentUsername }) {
       return;
     }
     if (newRole === "auditor" && !newAuditorInitials) {
-      setError("Pick which auditor this account logs time for.");
+      setError("Enter the initials this auditor account logs time for.");
       return;
     }
-    if (newRole === "auditor" && accounts.some((a) => a.role === "auditor" && a.auditorInitials === newAuditorInitials)) {
-      setError(`${newAuditorInitials} is already linked to another auditor account.`);
+    const auditorInitials = newAuditorInitials.trim().toUpperCase();
+    if (newRole === "auditor" && accounts.some((a) => a.role === "auditor" && a.auditorInitials === auditorInitials)) {
+      setError(`${auditorInitials} is already linked to another auditor account.`);
       return;
     }
     const passwordHash = await hashPassword(newPassword);
-    const account = { username: uname, passwordHash, role: newRole, auditorInitials: newRole === "auditor" ? newAuditorInitials : "" };
+    const account = { username: uname, passwordHash, role: newRole, auditorInitials: newRole === "auditor" ? auditorInitials : "" };
     onChange([...accounts, account]);
     setNewUsername("");
     setNewPassword("");
+    setNewAuditorInitials("");
   }
 
   function removeAccount(username) {
@@ -879,12 +879,8 @@ function AccountsTab({ accounts, auditors, onChange, currentUsername }) {
           </div>
           {newRole === "auditor" && (
             <div>
-              <label style={{ fontSize: 12, color: "#5A5A54", display: "block", marginBottom: 4 }}>Auditor</label>
-              <select value={newAuditorInitials} onChange={(e) => setNewAuditorInitials(e.target.value)} style={{ border: "1px solid #D8D8D2", borderRadius: 4, padding: "6px 8px" }}>
-                {auditors.map((a) => (
-                  <option key={a.initials} value={a.initials}>{a.initials}{a.name ? ` — ${a.name}` : ""}</option>
-                ))}
-              </select>
+              <label style={{ fontSize: 12, color: "#5A5A54", display: "block", marginBottom: 4 }}>Auditor initials</label>
+              <input value={newAuditorInitials} onChange={(e) => setNewAuditorInitials(e.target.value)} placeholder="e.g. ABC" style={{ border: "1px solid #D8D8D2", borderRadius: 4, padding: "6px 8px" }} />
             </div>
           )}
           <button className="pt-btn" onClick={addAccount}>Add account</button>
