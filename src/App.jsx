@@ -458,17 +458,11 @@ function TimeEntryTab({ auditors, selectedAuditor, setSelectedAuditor, weekStart
             <tbody>
               {weekDates.map((d) => {
                 const dateStr = toDateStr(d);
-                const yearEngagements = engagements.filter((e) => String(e.year || "") === String(d.getFullYear()));
                 return (
                   <tr key={dateStr}>
                     <td style={{ fontWeight: 500 }}>{formatDisplayDate(d)}</td>
                     {TIME_SLOTS.map((s) => (
                       <td key={s.id}>
-                        <select value={getSlotCode(selectedAuditor, dateStr, s.id)} onChange={(e) => setSlotCode(selectedAuditor, dateStr, s.id, e.target.value)}>
-                          <option value="">—</option>
-                          <optgroup label={`Engagements (${d.getFullYear()})`}>{yearEngagements.map((e) => <option key={e.code} value={e.code}>{e.code}</option>)}</optgroup>
-                          <optgroup label="Admin / non-engagement">{adminCodes.map((c) => <option key={c.code} value={c.code}>{c.code}</option>)}</optgroup>
-                        </select>
                         <input list="entry-code-suggestions" value={getSlotCode(selectedAuditor, dateStr, s.id)} onChange={(e) => setSlotCode(selectedAuditor, dateStr, s.id, e.target.value)} placeholder="Type code" aria-label="Type engagement code" />
                       </td>
                     ))}
