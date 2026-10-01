@@ -476,7 +476,7 @@ def render(content, **context):
     if session.get("role") == "auditor": tabs.append(("report", "Report"))
     if is_manager(): tabs.extend([("report", "Report"), ("accounts", "Accounts")])
     context = {**context, "csrf_token": generate_csrf_token()}
-    rendered_content = "<style>.entry-grid .entry-code-input{width:190px}.entry-grid table{min-width:1500px}</style>" + render_template_string(content, **context)
+    rendered_content = "<style>.entry-grid .entry-code-input{width:190px}.entry-grid table{min-width:1500px}.week-navigation>a.btn{margin-bottom:14px}</style>" + render_template_string(content, **context)
     rendered_content += "<script>document.addEventListener('submit',function(event){if(event.target.action.includes('/entry'))sessionStorage.setItem('timeEntryScroll',String(window.scrollY));});window.addEventListener('load',function(){var scroll=sessionStorage.getItem('timeEntryScroll');if(scroll!==null){window.scrollTo(0,Number(scroll));sessionStorage.removeItem('timeEntryScroll');}});</script>"
     rendered_content += "<script>document.addEventListener('input',function(event){if(event.target.name==='code'&&event.target.form){event.target.form.querySelectorAll('[data-budget-field]').forEach(function(field){field.hidden=event.target.value.trim().toUpperCase().startsWith('BR');});}});</script>"
     return render_template_string(PAGE, content=rendered_content, user=session.get("username"), role=session.get("role", "").title(), tabs=tabs, csrf_token=context["csrf_token"])
