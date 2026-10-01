@@ -19,12 +19,15 @@ connection = db()
 connection.execute("DELETE FROM accounts WHERE username='tl-created'")
 connection.execute("INSERT OR REPLACE INTO accounts(username, password_hash, role, auditor, audit_type) VALUES (?, ?, ?, ?, ?)", ("tl-smoke", password_hash("test"), "TL", "", "branch"))
 connection.execute("INSERT OR REPLACE INTO accounts(username, password_hash, role, auditor, audit_type) VALUES (?, ?, ?, ?, ?)", ("tl-it-smoke", password_hash("test"), "TL", "", "it"))
+connection.execute("INSERT OR REPLACE INTO accounts(username, password_hash, role, auditor, audit_type) VALUES (?, ?, ?, ?, ?)", ("tl-business-smoke", password_hash("test"), "TL", "", "business"))
 connection.execute("INSERT OR REPLACE INTO accounts(username, password_hash, role, auditor, audit_type) VALUES (?, ?, ?, ?, ?)", ("branch-smoke", password_hash("test"), "auditor", "B01", "branch"))
 connection.execute("INSERT OR REPLACE INTO accounts(username, password_hash, role, auditor, audit_type) VALUES (?, ?, ?, ?, ?)", ("legacy-branch-smoke", password_hash("test"), "auditor", "B02", "branch"))
 connection.execute("INSERT OR REPLACE INTO accounts(username, password_hash, role, auditor, audit_type) VALUES (?, ?, ?, ?, ?)", ("it-smoke", password_hash("test"), "auditor", "I01", "it"))
+connection.execute("INSERT OR REPLACE INTO accounts(username, password_hash, role, auditor, audit_type) VALUES (?, ?, ?, ?, ?)", ("business-smoke", password_hash("test"), "auditor", "P01", "business"))
 connection.execute("INSERT INTO auditors(initials, name, audit_type) VALUES (?, ?, ?) ON CONFLICT(initials) DO UPDATE SET name=excluded.name, audit_type=excluded.audit_type", ("B01", "Branch Smoke", "branch"))
 connection.execute("INSERT INTO auditors(initials, name, audit_type) VALUES (?, ?, ?) ON CONFLICT(initials) DO UPDATE SET name=excluded.name, audit_type=excluded.audit_type", ("B02", "Legacy Branch Smoke", "branch"))
 connection.execute("INSERT INTO auditors(initials, name, audit_type) VALUES (?, ?, ?) ON CONFLICT(initials) DO UPDATE SET name=excluded.name, audit_type=excluded.audit_type", ("I01", "IT Smoke", "it"))
+connection.execute("INSERT INTO auditors(initials, name, audit_type) VALUES (?, ?, ?) ON CONFLICT(initials) DO UPDATE SET name=excluded.name, audit_type=excluded.audit_type", ("P01", "Business Smoke", "business"))
 branch_codes = connection.execute("SELECT code, description, year FROM codes WHERE kind='engagement' AND code LIKE 'BR%' ORDER BY code").fetchall()
 assert branch_codes, "No branch engagement codes were initialized"
 branch_code = branch_codes[0]
@@ -74,8 +77,11 @@ assert budgets["annual_budget"] is None and budgets["auditor_budget"] is None, "
 connection.close()
 
 monday = week_start(date.today().isoformat())
-range_start = monday + timedelta(days=1)
-range_end = monday + timedelta(days=10)
+range_start = monday
+range_end = monday + timedelta(days=13)
+start_iso_week = f"{range_start.isocalendar().year}-W{range_start.isocalendar().week:02d}"
+end_week_monday = range_start + timedelta(days=7)
+end_iso_week = f"{end_week_monday.isocalendar().year}-W{end_week_monday.isocalendar().week:02d}"
 connection = db()
 connection.execute("INSERT INTO weekly_engagement_assignments(week_start, auditor, code) VALUES (?, ?, ?)", (monday.isoformat(), "B02", branch_code["code"]))
 connection.commit()
@@ -87,15 +93,15 @@ assert migrated and migrated["start_date"] == monday.isoformat() and migrated["e
 connection.close()
 assignment = post_as("TL", "tl-smoke", "", "/assignments", {
     "code": branch_code["code"],
-    "start_date": range_start.isoformat(),
-    "end_date": range_end.isoformat(),
+    "start_week": start_iso_week,
+    "end_week": end_iso_week,
     "auditor": "B01",
 })
 assert assignment.status_code == 302, assignment.get_data(as_text=True)
 set_session("TL", "tl-smoke")
 branch_manager_page = client.get("/?tab=engagements")
-assert b"name='start_date'" in branch_manager_page.data and b"name='end_date'" in branch_manager_page.data
-assert b"IT / Business engagement code" not in branch_manager_page.data
+assert b"name='start_week'" in branch_manager_page.data and b"name='end_week'" in branch_manager_page.data
+assert b"IT annual assignments" not in branch_manager_page.data and b"Business Process annual assignments" not in branch_manager_page.data
 wrong_group = post_as("TL", "tl-smoke", "", "/assignments", {
     "code": it_code["code"],
     "year": str(it_code["year"]),
@@ -117,8 +123,18 @@ legacy_assignment = post_as("TL", "tl-it-smoke", "", "/assignments", {
 assert legacy_assignment.status_code == 302
 set_session("TL", "tl-it-smoke")
 it_manager_page = client.get("/?tab=engagements")
-assert b"IT / Business engagement code" in it_manager_page.data
-assert b"name='start_date'" not in it_manager_page.data
+assert b"IT annual assignments" in it_manager_page.data
+assert b"Business Process annual assignments" not in it_manager_page.data
+assert b"name='start_week'" not in it_manager_page.data
+set_session("TL", "tl-business-smoke")
+business_manager_page = client.get("/?tab=engagements")
+assert b"Business Process annual assignments" in business_manager_page.data
+assert b"IT annual assignments" not in business_manager_page.data
+set_session("admin", "admin")
+admin_manager_page = client.get("/?tab=engagements")
+assert b"IT annual assignments" in admin_manager_page.data
+assert b"Business Process annual assignments" in admin_manager_page.data
+assert b"Branch date-range assignments" in admin_manager_page.data
 
 set_session("auditor", "branch-smoke", "B01")
 week_page = client.get(f"/?week={monday.isoformat()}")

@@ -627,10 +627,30 @@ def codes_page(tab):
         add_form = ""
     overtime_body = "".join(f"<tr><td>{escape(row['code'])}</td><td>{escape(row['description'])}</td><td>{row['year']}</td></tr>" for row in overtime_rows)
     overtime_table = f"<section><h3>Encoded overtime</h3><p class='muted'>Create overtime codes from the form above by selecting an overtime subcode. They appear here and are available in Time Entry.</p><table><tr><th>Code</th><th>Description / particulars</th><th>Year</th></tr>{overtime_body}</table></section>" if kind == "engagement" else ""
-    annual_auditors = [auditor for auditor in auditors if auditor["audit_type"] in {"it", "business"}]
+    annual_assignment_forms = []
+    if kind == "engagement" and is_manager():
+        for audit_type, label, prefix in (("it", "IT", "IT"), ("business", "Business Process", "BP")):
+            if scoped_audit_type and scoped_audit_type != audit_type:
+                continue
+            group_auditors = [auditor for auditor in auditors if auditor["audit_type"] == audit_type]
+            group_codes = [row for row in rows if row["code"].startswith(prefix)]
+            code_options = "".join(f"<option value='{escape(row['code'])}'>{escape(row['code'])} - {escape(row['description'])}</option>" for row in group_codes)
+            auditor_options = "".join(f"<option value='{escape(auditor['initials'])}'>{escape(auditor['initials'])} {escape(auditor['name'])}</option>" for auditor in group_auditors)
+            no_auditors = not group_auditors
+            code_select = f"<select name='code' required {'disabled' if not group_codes else ''}><option value=''>Select engagement</option>{code_options}</select>" if group_codes else "<select name='code' disabled><option>No engagement codes available</option></select>"
+            auditor_select = f"<select name='auditor' required {'disabled' if no_auditors else ''}><option value=''>Select auditor</option>{auditor_options}</select>" if group_auditors else f"<select name='auditor' disabled><option>No {label} auditor accounts yet</option></select>"
+            annual_assignment_forms.append(f"<h4>{label} annual assignments</h4><form class='module-form' method='post' action='{url_for('assign_engagement')}'>{csrf_field()}<label>{label} engagement{code_select}</label><label>Year<input name='year' type='number' value='{date.today().year}' required></label><label>{label} auditor{auditor_select}</label><button class='btn' {'disabled' if no_auditors or not group_codes else ''}>Assign for year</button></form>")
+    annual_assignment_form = "".join(annual_assignment_forms)
     branch_auditors = [auditor for auditor in auditors if auditor["audit_type"] == "branch"]
-    annual_assignment_form = (f"<form class='module-form' method='post' action='{url_for('assign_engagement')}'>{csrf_field()}<label>IT / Business engagement code<input name='code' placeholder='ITPP-NAPP-H001' required></label><label>Year<input name='year' type='number' value='{date.today().year}' required></label><label>Auditor<select name='auditor' required>" + "".join(f"<option value='{a['initials']}'>{a['initials']} {a['name']} ({AUDIT_TYPE_LABELS.get(a['audit_type'], 'IT Audit')})</option>" for a in annual_auditors) + "</select></label><button class='btn'>Assign for year</button></form>") if kind == "engagement" and is_manager() and scoped_audit_type != "branch" and annual_auditors else ""
-    branch_assignment_form = (f"<form class='module-form' method='post' action='{url_for('assign_engagement')}'>{csrf_field()}<label>Branch engagement code<input name='code' placeholder='BRSP-NAPP-0000' required></label><label>Access starts<input name='start_date' type='date' required></label><label>Access ends<input name='end_date' type='date' required></label><label>Branch auditor<select name='auditor' required>" + "".join(f"<option value='{a['initials']}'>{a['initials']} {a['name']}</option>" for a in branch_auditors) + "</select></label><button class='btn'>Assign date range</button></form><p class='muted'>Branch access applies only between the selected start and end dates, inclusive.</p>") if kind == "engagement" and is_manager() and scoped_audit_type in {None, "branch"} and branch_auditors else ""
+    branch_codes = [row for row in rows if row["code"].startswith("BR")]
+    if kind == "engagement" and is_manager() and scoped_audit_type in {None, "branch"}:
+        branch_code_options = "".join(f"<option value='{escape(row['code'])}'>{escape(row['code'])} - {escape(row['description'])}</option>" for row in branch_codes)
+        branch_auditor_options = "".join(f"<option value='{escape(auditor['initials'])}'>{escape(auditor['initials'])} {escape(auditor['name'])}</option>" for auditor in branch_auditors)
+        branch_code_select = f"<select name='code' required {'disabled' if not branch_codes else ''}><option value=''>Select engagement</option>{branch_code_options}</select>" if branch_codes else "<select name='code' disabled><option>No branch engagement codes available</option></select>"
+        branch_auditor_select = f"<select name='auditor' required {'disabled' if not branch_auditors else ''}><option value=''>Select auditor</option>{branch_auditor_options}</select>" if branch_auditors else "<select name='auditor' disabled><option>No Branch auditor accounts yet</option></select>"
+        branch_assignment_form = f"<h4>Branch date-range assignments</h4><form class='module-form' method='post' action='{url_for('assign_engagement')}'>{csrf_field()}<label>Branch engagement code{branch_code_select}</label><label>Starting week<input name='start_week' type='week' required></label><label>Ending week<input name='end_week' type='week' required></label><label>Branch auditor{branch_auditor_select}</label><button class='btn' {'disabled' if not branch_auditors or not branch_codes else ''}>Assign weeks</button></form><p class='muted'>Access includes every day from the Monday of the starting week through the Sunday of the ending week.</p>"
+    else:
+        branch_assignment_form = ""
     assignment_form = annual_assignment_form + branch_assignment_form
     assignment_body = "".join(f"<tr><td>{escape(row['code'])}</td><td>Year {row['year']}</td><td>{escape(row['auditor'])}</td>" + (f"<td><form method='post' action='{url_for('delete_assignment')}'>{csrf_field()}<input type='hidden' name='code' value='{escape(row['code'])}'><input type='hidden' name='year' value='{row['year']}'><input type='hidden' name='auditor' value='{escape(row['auditor'])}'><button class='btn danger'>Delete</button></form></td>" if is_manager() else "") + "</tr>" for row in assignments)
     assignment_body += "".join(f"<tr><td>{escape(row['code'])}</td><td>{row['start_date']} to {row['end_date']}</td><td>{escape(row['auditor'])}</td>" + (f"<td><form method='post' action='{url_for('delete_assignment')}'>{csrf_field()}<input type='hidden' name='code' value='{escape(row['code'])}'><input type='hidden' name='start_date' value='{row['start_date']}'><input type='hidden' name='end_date' value='{row['end_date']}'><input type='hidden' name='auditor' value='{escape(row['auditor'])}'><button class='btn danger'>Delete</button></form></td>" if is_manager() else "") + "</tr>" for row in branch_assignments)
@@ -835,16 +855,31 @@ def assign_engagement():
 
     selected_start = request.form.get("start_date", "").strip()
     selected_end = request.form.get("end_date", "").strip()
+    selected_start_week = request.form.get("start_week", "").strip()
+    selected_end_week = request.form.get("end_week", "").strip()
     if required_audit_type == "branch":
-        if not selected_start or not selected_end:
+        if selected_start_week or selected_end_week:
+            if not selected_start_week or not selected_end_week:
+                connection.close()
+                return "Branch assignments require both a starting week and an ending week.", 400
+            try:
+                start_year, start_week_number = selected_start_week.split("-W", 1)
+                end_year, end_week_number = selected_end_week.split("-W", 1)
+                start_date = date.fromisocalendar(int(start_year), int(start_week_number), 1)
+                end_date = date.fromisocalendar(int(end_year), int(end_week_number), 1) + timedelta(days=6)
+            except (ValueError, TypeError):
+                connection.close()
+                return "Invalid starting or ending week.", 400
+        elif selected_start and selected_end:
+            try:
+                start_date = date.fromisoformat(selected_start)
+                end_date = date.fromisoformat(selected_end)
+            except ValueError:
+                connection.close()
+                return "Invalid assignment date range.", 400
+        else:
             connection.close()
-            return "Branch assignments require both a start date and an end date.", 400
-        try:
-            start_date = date.fromisoformat(selected_start)
-            end_date = date.fromisoformat(selected_end)
-        except ValueError:
-            connection.close()
-            return "Invalid assignment date range.", 400
+            return "Branch assignments require both a starting week and an ending week.", 400
         if start_date > end_date:
             connection.close()
             return "The assignment end date must be on or after its start date.", 400
@@ -865,7 +900,7 @@ def assign_engagement():
             (start_date.isoformat(), end_date.isoformat(), auditor, code),
         )
     else:
-        if selected_start or selected_end:
+        if selected_start or selected_end or selected_start_week or selected_end_week:
             connection.close()
             return "IT and Business Process assignments use a year, not a date range.", 400
         try:
