@@ -1,8 +1,13 @@
+import html
 import os
+import re
 import sys
 import tempfile
 from datetime import date, timedelta
+from io import BytesIO
 from pathlib import Path
+
+from openpyxl import Workbook
 
 DB_FILE = Path(tempfile.gettempdir()) / "productivity_tl_branch_smoke.db"
 DB_FILE.unlink(missing_ok=True)
@@ -66,6 +71,7 @@ def assert_scoped_engagement_page(response, expected_catalog, expected_overtime)
     html = response.get_data(as_text=True)
     catalog_sections = ("IT engagements", "Business process engagements", "Branch audit engagements")
     assert expected_catalog in html
+    assert "Create overtime code" in html
     assert all(section not in html for section in catalog_sections if section != expected_catalog)
     overtime_table = html.split("<h3>Encoded overtime</h3>", 1)[1].split("</section>", 1)[0]
     assert expected_overtime in overtime_table
@@ -121,6 +127,28 @@ assert b"name='start_date'" in branch_manager_page.data and b"name='end_date'" i
 assert b"name='start_week'" not in branch_manager_page.data and b"name='end_week'" not in branch_manager_page.data
 assert b"IT annual assignments" not in branch_manager_page.data and b"Business Process annual assignments" not in branch_manager_page.data
 assert_scoped_engagement_page(branch_manager_page, "Branch audit engagements", overtime_codes["branch"])
+branch_overtime_code = branch_code["code"].replace("-NAPP-", "-OTRD-")
+branch_overtime = post_as("TL", "tl-smoke", "", "/codes", {
+    "kind": "overtime",
+    "base_code": branch_code["code"],
+    "sub_code": "OTRD",
+    "description": "Branch assigned overtime smoke code",
+    "year": str(branch_code["year"]),
+})
+assert branch_overtime.status_code == 302, branch_overtime.get_data(as_text=True)
+branch_overtime_row = db().execute(
+    "SELECT 1 FROM codes WHERE code=? AND kind='overtime' AND year=?",
+    (branch_overtime_code, branch_code["year"]),
+).fetchone()
+assert branch_overtime_row, "TL-created overtime code was not saved"
+wrong_group_overtime = post_as("TL", "tl-smoke", "", "/codes", {
+    "kind": "overtime",
+    "base_code": it_code["code"],
+    "sub_code": "OTRD",
+    "description": "Wrong-group overtime smoke code",
+    "year": str(it_code["year"]),
+})
+assert wrong_group_overtime.status_code == 403, wrong_group_overtime.status_code
 wrong_group = post_as("TL", "tl-smoke", "", "/assignments", {
     "code": it_code["code"],
     "year": str(it_code["year"]),
@@ -162,6 +190,7 @@ assert all(code in admin_manager_page.get_data(as_text=True) for code in overtim
 set_session("auditor", "branch-smoke", "B01")
 week_page = client.get(f"/?week={monday.isoformat()}")
 assert week_page.status_code == 200
+assert b"entry-upload-form" in week_page.data, "Auditors should have access to batch upload"
 assert branch_code["code"].encode() in week_page.data
 if len(branch_codes) > 1:
     assert other_branch_code.encode() not in week_page.data, "Unassigned branch code should not be suggested"
@@ -169,6 +198,83 @@ middle_week_page = client.get(f"/?week={(monday + timedelta(days=7)).isoformat()
 assert branch_code["code"].encode() in middle_week_page.data, "The range should grant access in later weeks"
 
 entry_date = range_start
+connection = db()
+connection.execute(
+    "INSERT OR REPLACE INTO entries(auditor, work_date, slot, code) VALUES (?, ?, ?, ?)",
+    ("B01", entry_date.isoformat(), "12-13", "LBRK-NAPP-0000"),
+)
+connection.commit()
+connection.close()
+
+workbook = Workbook()
+worksheet = workbook.active
+worksheet.append(["DATE", *[f"{hour}:00 - {hour + 1}:00" for hour in range(6, 24)]])
+for day_offset in range(7):
+    upload_row = [None] * 19
+    upload_row[0] = monday + timedelta(days=day_offset)
+    if upload_row[0] == entry_date:
+        upload_row[4] = other_branch_code
+    worksheet.append(upload_row)
+workbook_stream = BytesIO()
+workbook.save(workbook_stream)
+workbook_stream.seek(0)
+set_session("auditor", "branch-smoke", "B01")
+upload_preview = client.post(
+    "/entry/upload/preview",
+    data={
+        "auditor": "B01",
+        "week": monday.isoformat(),
+        "workbook": (workbook_stream, "weekly-entries.xlsx"),
+        "csrf_token": csrf,
+    },
+    content_type="multipart/form-data",
+)
+assert upload_preview.status_code == 200, upload_preview.get_data(as_text=True)
+preview_html = upload_preview.get_data(as_text=True)
+assert "Confirm import" in preview_html and "Blank cells will be left unchanged" in preview_html
+upload_payload = html.unescape(re.search(r"name='entries' value='([^']*)'", preview_html).group(1))
+upload_confirm = client.post(
+    "/entry/upload/confirm",
+    data={"auditor": "B01", "week": monday.isoformat(), "entries": upload_payload, "csrf_token": csrf},
+    follow_redirects=False,
+)
+assert upload_confirm.status_code == 302, upload_confirm.get_data(as_text=True)
+connection = db()
+assert not connection.execute(
+    "SELECT 1 FROM branch_engagement_assignments WHERE auditor=? AND code=? AND start_date<=? AND end_date>=?",
+    ("B01", other_branch_code, entry_date.isoformat(), entry_date.isoformat()),
+).fetchone(), "Excel upload fixture must use a registered but unassigned engagement"
+assert connection.execute(
+    "SELECT 1 FROM entries WHERE auditor=? AND work_date=? AND slot=? AND code=?",
+    ("B01", entry_date.isoformat(), "9-10", other_branch_code),
+).fetchone(), "Excel-uploaded time entry was not saved"
+assert connection.execute(
+    "SELECT 1 FROM entries WHERE auditor=? AND work_date=? AND slot=? AND code=?",
+    ("B01", entry_date.isoformat(), "12-13", "LBRK-NAPP-0000"),
+).fetchone(), "Blank Excel cells should leave existing time entries unchanged"
+connection.close()
+
+invalid_workbook = Workbook()
+invalid_worksheet = invalid_workbook.active
+invalid_worksheet.append(["DATE", *[f"{hour}:00 - {hour + 1}:00" for hour in range(6, 24)], "NOTES"])
+for day_offset in range(7):
+    invalid_worksheet.append([monday + timedelta(days=day_offset), *([None] * 19)])
+invalid_stream = BytesIO()
+invalid_workbook.save(invalid_stream)
+invalid_stream.seek(0)
+invalid_upload = client.post(
+    "/entry/upload/preview",
+    data={
+        "auditor": "B01",
+        "week": monday.isoformat(),
+        "workbook": (invalid_stream, "wrong-template.xlsx"),
+        "csrf_token": csrf,
+    },
+    content_type="multipart/form-data",
+)
+assert invalid_upload.status_code == 400
+assert b"exact time-entry template" in invalid_upload.data
+
 entry = post_as("auditor", "branch-smoke", "B01", "/entry", {
     "auditor": "B01",
     "work_date": entry_date.isoformat(),
@@ -176,6 +282,13 @@ entry = post_as("auditor", "branch-smoke", "B01", "/entry", {
     "typed_code": branch_code["code"],
 })
 assert entry.status_code == 302
+manual_unassigned = post_as("auditor", "branch-smoke", "B01", "/entry", {
+    "auditor": "B01",
+    "work_date": entry_date.isoformat(),
+    "slot": "8-9",
+    "typed_code": other_branch_code,
+})
+assert manual_unassigned.status_code == 302
 end_date_entry = post_as("auditor", "branch-smoke", "B01", "/entry", {
     "auditor": "B01",
     "work_date": range_end.isoformat(),
@@ -192,6 +305,7 @@ unassigned = post_as("auditor", "branch-smoke", "B01", "/entry", {
 assert unassigned.status_code == 302
 connection = db()
 assert connection.execute("SELECT 1 FROM entries WHERE auditor=? AND work_date=? AND slot=? AND code=?", ("B01", entry_date.isoformat(), "6-7", branch_code["code"])).fetchone(), "Assigned branch entry was not saved"
+assert not connection.execute("SELECT 1 FROM entries WHERE auditor=? AND work_date=? AND slot=? AND code=?", ("B01", entry_date.isoformat(), "8-9", other_branch_code)).fetchone(), "Manual entry should continue to reject unassigned engagements"
 assert connection.execute("SELECT 1 FROM entries WHERE auditor=? AND work_date=? AND slot=? AND code=?", ("B01", range_end.isoformat(), "7-8", branch_code["code"])).fetchone(), "The branch assignment end date must be inclusive"
 assert not connection.execute("SELECT 1 FROM entries WHERE auditor=? AND work_date=? AND slot=? AND code=?", ("B01", (range_end + timedelta(days=1)).isoformat(), "6-7", branch_code["code"])).fetchone(), "Entry after the branch assignment end date must be rejected"
 connection.close()

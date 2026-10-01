@@ -2,14 +2,16 @@ from __future__ import annotations
 
 import hashlib
 from html import escape
+import json
 import os
 import re
 import secrets
 import sqlite3
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from functools import wraps
 
 from flask import Flask, redirect, render_template_string, request, session, url_for
+from openpyxl import load_workbook
 from werkzeug.security import check_password_hash, generate_password_hash
 
 try:
@@ -86,6 +88,7 @@ app.config.update(
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE="Lax",
     SESSION_COOKIE_SECURE=os.environ.get("PRODUCTIVITY_COOKIE_SECURE", "false").lower() == "true",
+    MAX_CONTENT_LENGTH=5 * 1024 * 1024,
 )
 DB_PATH = os.environ.get("PRODUCTIVITY_DB", os.path.join(os.path.dirname(__file__), "productivity.db"))
 MD_PER_SLOT = 0.125
@@ -442,6 +445,15 @@ def management_only(view):
     return wrapped
 
 
+def team_leader_only(view):
+    @wraps(view)
+    def wrapped(*args, **kwargs):
+        if session.get("role") != "TL":
+            return "Team Leader access required", 403
+        return view(*args, **kwargs)
+    return wrapped
+
+
 def is_manager():
     return session.get("role") in MANAGER_ROLES
 
@@ -461,6 +473,154 @@ def week_start(value: str | None) -> date:
     return selected - timedelta(days=selected.weekday())
 
 
+def parse_excel_entry_upload(upload, selected_week):
+    filename = (upload.filename or "").lower()
+    if not filename.endswith(".xlsx"):
+        raise ValueError("Choose an Excel .xlsx workbook.")
+    try:
+        workbook = load_workbook(upload.stream, read_only=True, data_only=False)
+    except Exception as exc:
+        raise ValueError("The uploaded file is not a readable .xlsx workbook.") from exc
+    try:
+        worksheet = workbook.active
+        header = next(worksheet.iter_rows(min_row=1, max_row=1, values_only=True), ())
+        template_width = 19
+        normalize_header = lambda value: re.sub(r"\s+", "", str(value).strip().lower()).replace("–", "-").replace("—", "-") if value is not None else ""
+        expected_headers = ["date", *[f"{hour}:00-{hour + 1}:00" for hour in range(6, 24)]]
+        actual_headers = [normalize_header(value) for value in header[:template_width]]
+        has_extra_headers = any(normalize_header(value) for value in header[template_width:])
+        if actual_headers != expected_headers or has_extra_headers:
+            raise ValueError("Use the exact time-entry template: DATE followed by hourly columns from 6:00 - 7:00 through 23:00 - 24:00, in order.")
+        date_column = 0
+        slot_columns = {f"{hour}-{hour + 1}": hour - 5 for hour in range(6, 24)}
+
+        entries = []
+        seen_dates = set()
+        expected_dates = [selected_week + timedelta(days=offset) for offset in range(7)]
+        date_index = 0
+        used_columns = [date_column, *slot_columns.values()]
+        for row_number, row in enumerate(worksheet.iter_rows(min_row=2, values_only=True), start=2):
+            if any(value is not None and str(value).strip() for value in row[template_width:]):
+                raise ValueError(f"Row {row_number}: data outside the time-entry template is not allowed.")
+            values = [row[index] if index < len(row) else None for index in used_columns]
+            if not any(value is not None and str(value).strip() for value in values):
+                continue
+            date_value = row[date_column] if date_column < len(row) else None
+            if isinstance(date_value, datetime):
+                work_date = date_value.date()
+            elif isinstance(date_value, date):
+                work_date = date_value
+            elif isinstance(date_value, str):
+                try:
+                    work_date = date.fromisoformat(date_value.strip())
+                except ValueError as exc:
+                    raise ValueError(f"Row {row_number}: DATE must be an Excel date or ISO date (YYYY-MM-DD).") from exc
+            else:
+                raise ValueError(f"Row {row_number}: DATE must be an Excel date or ISO date (YYYY-MM-DD).")
+            if not selected_week <= work_date <= selected_week + timedelta(days=6):
+                raise ValueError(f"Row {row_number}: {work_date.isoformat()} is outside the selected week.")
+            if work_date in seen_dates:
+                raise ValueError(f"Row {row_number}: {work_date.isoformat()} appears more than once.")
+            if date_index >= len(expected_dates) or work_date != expected_dates[date_index]:
+                raise ValueError("Use seven consecutive DATE rows in Monday-to-Sunday order for the selected week.")
+            seen_dates.add(work_date)
+            date_index += 1
+            for slot, column in slot_columns.items():
+                value = row[column] if column < len(row) else None
+                if value is None or not str(value).strip():
+                    continue
+                if not isinstance(value, str):
+                    raise ValueError(f"Row {row_number}, {slot}: engagement codes must be text.")
+                code = value.strip().upper()
+                if code.startswith("="):
+                    raise ValueError(f"Row {row_number}, {slot}: formulas are not accepted as engagement codes.")
+                entries.append({"date": work_date.isoformat(), "slot": slot, "code": code})
+        if date_index != len(expected_dates):
+            raise ValueError("The template must contain all seven dates in the selected week.")
+        if not entries:
+            raise ValueError("The selected week has no non-blank time-entry codes to upload.")
+        if len(entries) > 126:
+            raise ValueError("A weekly upload can contain at most 126 time-entry cells.")
+        return entries
+    finally:
+        workbook.close()
+
+
+def resolve_entry_upload_target(connection, requested_auditor):
+    if session.get("role") == "auditor":
+        selected = (session.get("auditor") or "").strip().upper()
+    else:
+        selected = (requested_auditor or "").strip().upper()
+    if not selected:
+        raise ValueError("Select an auditor before uploading time entries.")
+    account = connection.execute(
+        "SELECT role, audit_type FROM accounts WHERE auditor=? AND role IN ('auditor', 'TL')",
+        (selected,),
+    ).fetchone()
+    if not account:
+        raise ValueError("The selected auditor account was not found.")
+    manager_group = manager_audit_type(connection)
+    if manager_group and account["audit_type"] != manager_group:
+        raise ValueError("Team Leaders can upload entries only for their audit group.")
+    return selected, account["audit_type"]
+
+
+def validate_entry_upload(connection, entries, selected_week, selected_auditor, target_audit_type):
+    slots = {f"{hour}-{hour + 1}" for hour in range(6, 24)}
+    normalized_entries = []
+    seen_cells = set()
+    errors = []
+    for index, entry in enumerate(entries, start=1):
+        if not isinstance(entry, dict):
+            errors.append(f"Entry {index}: invalid row data.")
+            continue
+        try:
+            work_date = date.fromisoformat(str(entry.get("date", "")))
+        except ValueError:
+            errors.append(f"Entry {index}: invalid date.")
+            continue
+        slot = str(entry.get("slot", ""))
+        code = str(entry.get("code", "")).strip().upper()
+        if not selected_week <= work_date <= selected_week + timedelta(days=6):
+            errors.append(f"{work_date.isoformat()} {slot}: date is outside the selected week.")
+            continue
+        if slot not in slots or len(code) > 64 or not code:
+            errors.append(f"{work_date.isoformat()} {slot}: invalid slot or blank code.")
+            continue
+        cell_key = (work_date.isoformat(), slot)
+        if cell_key in seen_cells:
+            errors.append(f"{work_date.isoformat()} {slot}: duplicate time-entry cell.")
+            continue
+        seen_cells.add(cell_key)
+
+        base_code = engagement_base_code(code)
+        code_row = connection.execute(
+            "SELECT kind FROM codes WHERE code=? AND year=? ORDER BY CASE WHEN kind='overtime' THEN 0 ELSE 1 END LIMIT 1",
+            (code, work_date.year),
+        ).fetchone()
+        code_kind = code_row["kind"] if code_row else None
+        if not code_row and base_code != code:
+            base_row = connection.execute(
+                "SELECT kind FROM codes WHERE code=? AND kind='engagement' AND year=?",
+                (base_code, work_date.year),
+            ).fetchone()
+            if base_row:
+                code_kind = "overtime"
+        if not code_kind:
+            errors.append(f"{work_date.isoformat()} {slot}: {code} is not registered for {work_date.year}.")
+            continue
+        code_group = audit_type_for_engagement(base_code)
+        if target_audit_type and code_kind in {"engagement", "overtime"} and code_group != target_audit_type:
+            errors.append(f"{work_date.isoformat()} {slot}: {code} is outside your audit group.")
+            continue
+        normalized_entries.append({"date": work_date.isoformat(), "slot": slot, "code": code})
+    if errors:
+        raise ValueError("<br>".join(escape(error) for error in errors[:20]))
+    if not normalized_entries:
+        raise ValueError("The upload contains no valid time-entry cells.")
+    return normalized_entries
+
+
 PAGE = """<!doctype html><html lang='en'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>IT Audit Productivity</title>
 <style>
 :root{--ink:#142b35;--ink-soft:#5f7074;--line:#d9e1df;--paper:#f5f7f4;--white:#fff;--teal:#087f71;--teal-dark:#07564f;--coral:#e56d50;--shadow:0 14px 35px rgba(20,43,53,.08)}
@@ -476,7 +636,7 @@ def render(content, **context):
     if session.get("role") == "auditor": tabs.append(("report", "Report"))
     if is_manager(): tabs.extend([("report", "Report"), ("accounts", "Accounts")])
     context = {**context, "csrf_token": generate_csrf_token()}
-    rendered_content = "<style>.entry-grid .entry-code-input{width:190px}.entry-grid table{min-width:1500px}.week-navigation>a.btn{margin-bottom:14px}.report-grid{min-width:0}.report-grid section{min-width:0}.report-grid table{width:100%;table-layout:fixed}.report-grid th,.report-grid td{white-space:normal;overflow-wrap:anywhere}.non-engagement-report{grid-column:1/-1}.non-engagement-table-wrap{display:flex;justify-content:center;min-width:0;max-width:100%;overflow-x:auto}.non-engagement-table-wrap table{width:100%;max-width:1100px;table-layout:fixed}</style>" + render_template_string(content, **context)
+    rendered_content = "<style>.entry-grid .entry-code-input{width:190px}.entry-grid table{min-width:1500px}.week-navigation{display:flex;justify-content:space-between;align-items:flex-end;gap:12px;flex-wrap:wrap}.week-navigation-controls{flex:1 1 auto;margin:0}.week-navigation-controls>a.btn{margin-bottom:14px}.entry-upload-form{display:flex;align-items:flex-end;gap:8px;margin:0 0 0 auto;flex:0 1 auto}.entry-upload-form label{min-width:200px;width:245px;margin-bottom:14px}.entry-upload-form input[type=file]{width:100%;max-width:245px}.entry-upload-form .btn{margin-bottom:14px}.upload-success{color:#07564f;font-weight:700}.report-grid{min-width:0}.report-grid section{min-width:0}.report-grid table{width:100%;table-layout:fixed}.report-grid th,.report-grid td{white-space:normal;overflow-wrap:anywhere}.non-engagement-report{grid-column:1/-1}.non-engagement-table-wrap{display:flex;justify-content:center;min-width:0;max-width:100%;overflow-x:auto}.non-engagement-table-wrap table{width:100%;max-width:1100px;table-layout:fixed}@media(max-width:700px){.week-navigation{display:block}.week-navigation-controls{display:flex}.entry-upload-form{width:100%;flex-wrap:wrap;margin:0 0 8px}.entry-upload-form label{width:100%;min-width:0}}</style>" + render_template_string(content, **context)
     rendered_content += "<script>document.addEventListener('submit',function(event){if(event.target.action.includes('/entry'))sessionStorage.setItem('timeEntryScroll',String(window.scrollY));});window.addEventListener('load',function(){var scroll=sessionStorage.getItem('timeEntryScroll');if(scroll!==null){window.scrollTo(0,Number(scroll));sessionStorage.removeItem('timeEntryScroll');}});</script>"
     rendered_content += "<script>document.addEventListener('input',function(event){if(event.target.name==='code'&&event.target.form){event.target.form.querySelectorAll('[data-budget-field]').forEach(function(field){field.hidden=event.target.value.trim().toUpperCase().startsWith('BR');});}});</script>"
     return render_template_string(PAGE, content=rendered_content, user=session.get("username"), role=session.get("role", "").title(), tabs=tabs, csrf_token=context["csrf_token"])
@@ -564,15 +724,24 @@ def entry_page():
         if is_manager()
         else ""
     )
+    entry_upload_form = (
+        f"<form method='post' action='{url_for('preview_entry_upload')}' enctype='multipart/form-data' class='entry-upload-form'>"
+        f"{csrf_field()}<input type='hidden' name='auditor' value='{escape(selected)}'><input type='hidden' name='week' value='{start.isoformat()}'>"
+        "<label>Excel workbook<input type='file' name='workbook' accept='.xlsx' required></label><button class='btn secondary'>Upload Excel</button></form>"
+        if session.get("role") in {"admin", "TL", "auditor"}
+        else ""
+    )
     week_controls = (
-        "<form method='get' class='module-form week-navigation'>"
+        "<div class='week-navigation'><form method='get' class='module-form week-navigation-controls'>"
         "<input type='hidden' name='tab' value='entry'>"
         f"{manager_auditor_field}"
         f"<a class='btn secondary' href='{previous_url}' aria-label='Previous week'>&larr; Previous week</a>"
         f"<label>Week containing<input type='date' name='week' value='{start.isoformat()}' onchange='this.form.submit()' required></label>"
         f"<a class='btn secondary' href='{next_url}' aria-label='Next week'>Next week &rarr;</a>"
-        "</form>"
+        f"</form>{entry_upload_form}</div>"
     )
+    uploaded_count = request.args.get("uploaded", type=int)
+    upload_notice = f"<p class='upload-success'>Imported {uploaded_count} time-entry cells. Blank cells were left unchanged.</p>" if uploaded_count is not None else ""
     slot_headers = "".join(f"<th>{slot}</th>" for slot in slots)
     entry_rows = []
     for day in days:
@@ -592,7 +761,7 @@ def entry_page():
         entry_rows.append(f"<tr><td><b>{day.strftime('%a')}</b><br>{day.isoformat()}</td>{''.join(cells)}</tr>")
     code_suggestions = "".join(f"<option value='{escape(code)}'></option>" for code in entry_codes)
     content = (
-        f"<div class='card'><h2>Time entry</h2>{week_controls}"
+        f"<div class='card'><h2>Time entry</h2>{upload_notice}{week_controls}"
         f"<p class='muted'>Showing {days[0].isoformat()} through {days[-1].isoformat()}. "
         "Each hour counts as 0.125 MD. Overtime codes are available for registered engagements. "
         "Type an engagement code and choose a suggestion.</p>"
@@ -631,6 +800,77 @@ def save_entry():
     else: connection.execute("DELETE FROM entries WHERE auditor=? AND work_date=? AND slot=?", params)
     connection.commit(); connection.close()
     return redirect(url_for("home", tab="entry", auditor=auditor, week=request.form["work_date"]))
+
+
+def upload_error_page(message):
+    content = f"<div class='card'><h2>Excel upload not imported</h2><p class='error'>{escape(message)}</p><a class='btn secondary' href='{url_for('home', tab='entry')}'>Back to Time entry</a></div>"
+    return render(content)
+
+
+@app.post("/entry/upload/preview")
+@signed_in
+def preview_entry_upload():
+    upload = request.files.get("workbook")
+    if not upload:
+        return upload_error_page("Choose an .xlsx workbook to upload."), 400
+    try:
+        selected_week = week_start(request.form.get("week"))
+        entries = parse_excel_entry_upload(upload, selected_week)
+        connection = db()
+        try:
+            selected_auditor, target_audit_type = resolve_entry_upload_target(connection, request.form.get("auditor", ""))
+            entries = validate_entry_upload(connection, entries, selected_week, selected_auditor, target_audit_type)
+        finally:
+            connection.close()
+    except ValueError as exc:
+        return upload_error_page(str(exc)), 400
+    preview_rows = "".join(
+        f"<tr><td>{escape(entry['date'])}</td><td>{escape(entry['slot'])}</td><td>{escape(entry['code'])}</td></tr>"
+        for entry in entries
+    )
+    payload = escape(json.dumps(entries, separators=(",", ":")), quote=True)
+    hidden_auditor = escape(selected_auditor, quote=True)
+    content = (
+        f"<div class='card'><h2>Preview Excel time entries</h2>"
+        f"<p>{len(entries)} cells for {escape(selected_auditor)} from {selected_week.isoformat()} will be imported. Blank cells will be left unchanged.</p>"
+        f"<div class='grid'><table><tr><th>Date</th><th>Hour</th><th>Code</th></tr>{preview_rows}</table></div>"
+        f"<form method='post' action='{url_for('confirm_entry_upload')}' class='module-form'>"
+        f"{csrf_field()}<input type='hidden' name='entries' value='{payload}'><input type='hidden' name='auditor' value='{hidden_auditor}'><input type='hidden' name='week' value='{selected_week.isoformat()}'>"
+        "<button class='btn'>Confirm import</button>"
+        f"<a class='btn secondary' href='{url_for('home', tab='entry', week=selected_week.isoformat(), auditor=selected_auditor)}'>Cancel</a></form></div>"
+    )
+    return render(content)
+
+
+@app.post("/entry/upload/confirm")
+@signed_in
+def confirm_entry_upload():
+    try:
+        selected_week = week_start(request.form.get("week"))
+        entries = json.loads(request.form.get("entries", ""))
+        if not isinstance(entries, list) or len(entries) > 126:
+            raise ValueError("The upload preview is invalid or exceeds 126 time-entry cells.")
+        connection = db()
+        try:
+            selected_auditor, target_audit_type = resolve_entry_upload_target(connection, request.form.get("auditor", ""))
+            entries = validate_entry_upload(connection, entries, selected_week, selected_auditor, target_audit_type)
+            connection.executemany(
+                "INSERT INTO entries(auditor, work_date, slot, code) VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(auditor, work_date, slot) DO UPDATE SET code=excluded.code",
+                [(selected_auditor, entry["date"], entry["slot"], entry["code"]) for entry in entries],
+            )
+            connection.commit()
+        finally:
+            connection.close()
+    except (ValueError, TypeError, json.JSONDecodeError) as exc:
+        return upload_error_page(str(exc)), 400
+    return redirect(url_for(
+        "home",
+        tab="entry",
+        week=selected_week.isoformat(),
+        auditor=selected_auditor,
+        uploaded=len(entries),
+    ))
 
 
 def codes_page(tab):
@@ -675,6 +915,17 @@ def codes_page(tab):
     admin_code_parts = "<label>Main code<select name='main_code' required><option value=''>Select</option>" + "".join(f"<option>{code}</option>" for code in ADMIN_MAIN_CODE_OPTIONS) + "</select></label><label>Sub code<select name='sub_code' required><option value='NAPP' selected>NAPP</option></select></label><label>Series code<input name='series_code' value='0000' readonly></label>"
     engagement_code_input = "<label>Engagement code<input name='code' placeholder='ITPP-NAPP-H001' required></label>"
     code_input = engagement_code_input if kind == "engagement" else code_parts if kind == "overtime" else admin_code_parts
+    overtime_base_rows = [row for row in rows if row["kind"] == "engagement"]
+    overtime_base_options = "".join(
+        f"<option value='{escape(row['code'])}'>{escape(row['code'])} - {escape(row['description'])} ({row['year']})</option>"
+        for row in overtime_base_rows
+    )
+    overtime_subcode_options = "".join(f"<option value='{code}'>{code}</option>" for code in sorted(OVERTIME_SUBCODES))
+    if kind == "engagement" and is_manager():
+        overtime_base_select = f"<select name='base_code' required {'disabled' if not overtime_base_rows else ''}><option value=''>Select engagement</option>{overtime_base_options}</select>" if overtime_base_rows else "<select name='base_code' disabled><option>No engagement codes available</option></select>"
+        overtime_form = f"<form class='module-form' method='post' action='{url_for('add_code')}'>{csrf_field()}<input type='hidden' name='kind' value='overtime'><label>Base engagement{overtime_base_select}</label><label>Overtime subcode<select name='sub_code' required><option value=''>Select overtime type</option>{overtime_subcode_options}</select></label><label>Description / particulars<input name='description' required></label><label>Year<input name='year' type='number' value='{date.today().year}' required></label><button class='btn' {'disabled' if not overtime_base_rows else ''}>Create overtime code</button></form>"
+    else:
+        overtime_form = ""
     if is_manager():
         if kind == "engagement":
             add_form = f"<form class='module-form' method='post' action='{url_for('add_code')}'>{csrf_field()}<input type='hidden' name='kind' value='{kind}'>{code_input}<label>Description / particulars<input name='description' required></label><label>Year<input name='year' type='number' value='" + str(date.today().year) + "'></label><label data-budget-field>Budget MD<input name='annual_budget'></label><label data-budget-field>Budget / auditor<input name='auditor_budget'></label><button class='btn'>Add / update</button><button class='btn danger' type='submit' formaction='" + url_for("delete_code_by_details") + "'>Delete</button></form>"
@@ -688,7 +939,7 @@ def codes_page(tab):
     if kind == "engagement":
         overtime_empty_state = f"No encoded overtime codes for the {AUDIT_TYPE_LABELS[scoped_audit_type]} group." if scoped_audit_type else "No encoded overtime codes recorded."
         overtime_body = overtime_body or f"<tr><td colspan='3'>{escape(overtime_empty_state)}</td></tr>"
-        overtime_table = f"<section><h3>Encoded overtime</h3><p class='muted'>Create overtime codes from the form above by selecting an overtime subcode. They appear here and are available in Time Entry.</p><table><tr><th>Code</th><th>Description / particulars</th><th>Year</th></tr>{overtime_body}</table></section>"
+        overtime_table = f"<section><h3>Encoded overtime</h3>{overtime_form}<p class='muted'>Created overtime codes are available in Time Entry.</p><table><tr><th>Code</th><th>Description / particulars</th><th>Year</th></tr>{overtime_body}</table></section>"
     else:
         overtime_table = ""
     annual_assignment_forms = []
@@ -933,12 +1184,19 @@ def add_auditor():
 @management_only
 def add_code():
     kind = request.form["kind"]
+    base_code = ""
     try:
         if kind == "engagement":
             code_parts = request.form["code"].strip().upper().split("-")
             if len(code_parts) != 3:
                 raise ValueError
             code = build_engagement_code(*code_parts)
+        elif kind == "overtime" and request.form.get("base_code"):
+            base_code = request.form["base_code"].strip().upper()
+            base_parts = base_code.split("-")
+            if len(base_parts) != 3 or base_parts[1] != "NAPP":
+                raise ValueError
+            code = build_engagement_code(base_parts[0], request.form.get("sub_code", ""), base_parts[2])
         else:
             code = build_engagement_code(request.form.get("main_code", ""), request.form.get("sub_code", ""), request.form.get("series_code", "")) if kind in {"overtime", "admin"} else request.form["code"].strip()
         if kind == "admin" and request.form.get("main_code", "").strip().upper() not in ADMIN_MAIN_CODE_OPTIONS:
@@ -953,7 +1211,20 @@ def add_code():
     if code.startswith("BR"):
         annual_budget = auditor_budget = None
     values = (code, request.form["description"].strip(), stored_kind, int(request.form.get("year", date.today().year)), annual_budget, auditor_budget)
-    connection = db(); connection.execute("INSERT INTO codes(code, description, kind, year, annual_budget, auditor_budget) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(code, kind, year) DO UPDATE SET description=excluded.description, annual_budget=COALESCE(excluded.annual_budget, codes.annual_budget), auditor_budget=COALESCE(excluded.auditor_budget, codes.auditor_budget)", values)
+    connection = db()
+    if base_code:
+        base_row = connection.execute(
+            "SELECT 1 FROM codes WHERE code=? AND kind='engagement' AND year=?",
+            (base_code, values[3]),
+        ).fetchone()
+        if not base_row:
+            connection.close()
+            return "The selected base engagement must exist for the chosen year.", 400
+        manager_group = manager_audit_type(connection)
+        if manager_group and manager_group != audit_type_for_engagement(base_code):
+            connection.close()
+            return "Team Leaders can create overtime codes only for their audit group.", 403
+    connection.execute("INSERT INTO codes(code, description, kind, year, annual_budget, auditor_budget) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(code, kind, year) DO UPDATE SET description=excluded.description, annual_budget=COALESCE(excluded.annual_budget, codes.annual_budget), auditor_budget=COALESCE(excluded.auditor_budget, codes.auditor_budget)", values)
     catalog_table = catalog_table_for_code(code) if stored_kind == "engagement" else None
     if catalog_table:
         connection.execute(f"INSERT INTO {catalog_table}(engagement_code, name, year) VALUES (?, ?, ?) ON CONFLICT(engagement_code) DO UPDATE SET name=excluded.name, year=excluded.year", (code, request.form["description"].strip(), values[3]))
