@@ -473,6 +473,7 @@ PAGE = """<!doctype html><html lang='en'><head><meta charset='utf-8'><meta name=
 
 def render(content, **context):
     tabs = [("entry", "Time entry"), ("monitoring", "Monitoring"), ("engagements", "Engagements"), ("admin", "Non-engagement codes"), ("auditors", "Auditors")]
+    if session.get("role") == "auditor": tabs.append(("report", "Report"))
     if is_manager(): tabs.extend([("report", "Report"), ("accounts", "Accounts")])
     context = {**context, "csrf_token": generate_csrf_token()}
     rendered_content = "<style>.entry-grid .entry-code-input{width:190px}.entry-grid table{min-width:1500px}</style>" + render_template_string(content, **context)
@@ -547,7 +548,57 @@ def entry_page():
             parts = code["code"].split("-")
             if len(parts) == 3 and parts[1] == "NAPP" and code["kind"] == "engagement" and (is_manager() or assigned):
                 entry_codes.extend(f"{parts[0]}-{subcode}-{parts[2]}" for subcode in sorted(OVERTIME_SUBCODES))
-    content = """<div class='card'><h2>Time entry</h2>{% if role == 'admin' %}<form method='get'><input type='hidden' name='tab' value='entry'><label>Auditor<select name='auditor' onchange='this.form.submit()'><option value=''>Select auditor account</option>{% for account in auditor_accounts %}<option value='{{account.auditor}}' {% if account.auditor==selected %}selected{% endif %}>{{account.auditor}} ({{account.username}})</option>{% endfor %}</select></label></form>{% endif %}<p class='muted'>Each hour counts as 0.125 MD. Overtime codes are available for registered engagements. Type an engagement code and choose a suggestion.</p><datalist id='entry-code-suggestions'>{% for code in entry_codes %}<option value='{{code}}'></option>{% endfor %}</datalist><div class='grid entry-grid'><table><tr><th>Date</th>{% for slot in slots %}<th>{{slot}}</th>{% endfor %}</tr>{% for day in days %}<tr><td><b>{{day.strftime('%a')}}</b><br>{{day.isoformat()}}</td>{% for slot in slots %}<td><form method='post' action='{{url_for("save_entry")}}'><input type='hidden' name='csrf_token' value='{{ csrf_token }}'><input type='hidden' name='auditor' value='{{selected}}'><input type='hidden' name='work_date' value='{{day.isoformat()}}'><input type='hidden' name='slot' value='{{slot}}'><input class='entry-code-input' name='typed_code' list='entry-code-suggestions' value='{{values.get((day.isoformat(),slot), "")}}' placeholder='Type code' onchange='this.form.submit()' aria-label='Type engagement code'></form></td>{% endfor %}</tr>{% endfor %}</table></div></div>"""
+    previous_week = (start - timedelta(days=7)).isoformat()
+    next_week = (start + timedelta(days=7)).isoformat()
+    previous_url = url_for("home", tab="entry", week=previous_week, auditor=selected) if is_manager() else url_for("home", tab="entry", week=previous_week)
+    next_url = url_for("home", tab="entry", week=next_week, auditor=selected) if is_manager() else url_for("home", tab="entry", week=next_week)
+    auditor_picker = "<label>Auditor<select name='auditor' onchange='this.form.submit()'><option value=''>Select auditor account</option>" + "".join(f"<option value='{escape(account['auditor'])}' {'selected' if account['auditor'] == selected else ''}>{escape(account['auditor'])} ({escape(account['username'])})</option>" for account in auditor_accounts) + "</select></label>" if is_manager() else ""
+    manager_auditor_field = (
+        "<label>Auditor<select name='auditor' onchange='this.form.submit()'>"
+        "<option value=''>Select auditor account</option>"
+        + "".join(
+            f"<option value='{escape(account['auditor'])}' {'selected' if account['auditor'] == selected else ''}>{escape(account['auditor'])} ({escape(account['username'])})</option>"
+            for account in auditor_accounts
+        )
+        + "</select></label>"
+        if is_manager()
+        else ""
+    )
+    week_controls = (
+        "<form method='get' class='module-form week-navigation'>"
+        "<input type='hidden' name='tab' value='entry'>"
+        f"{manager_auditor_field}"
+        f"<a class='btn secondary' href='{previous_url}' aria-label='Previous week'>&larr; Previous week</a>"
+        f"<label>Week containing<input type='date' name='week' value='{start.isoformat()}' onchange='this.form.submit()' required></label>"
+        f"<a class='btn secondary' href='{next_url}' aria-label='Next week'>Next week &rarr;</a>"
+        "</form>"
+    )
+    slot_headers = "".join(f"<th>{slot}</th>" for slot in slots)
+    entry_rows = []
+    for day in days:
+        cells = []
+        for slot in slots:
+            csrf = escape(generate_csrf_token())
+            current_code = escape(values.get((day.isoformat(), slot), ""))
+            cells.append(
+                f"<td><form method='post' action='{url_for('save_entry')}'>"
+                f"<input type='hidden' name='csrf_token' value='{csrf}'>"
+                f"<input type='hidden' name='auditor' value='{escape(selected)}'>"
+                f"<input type='hidden' name='work_date' value='{day.isoformat()}'>"
+                f"<input type='hidden' name='slot' value='{slot}'>"
+                f"<input class='entry-code-input' name='typed_code' list='entry-code-suggestions' value='{current_code}' placeholder='Type code' onchange='this.form.submit()' aria-label='Type engagement code'>"
+                "</form></td>"
+            )
+        entry_rows.append(f"<tr><td><b>{day.strftime('%a')}</b><br>{day.isoformat()}</td>{''.join(cells)}</tr>")
+    code_suggestions = "".join(f"<option value='{escape(code)}'></option>" for code in entry_codes)
+    content = (
+        f"<div class='card'><h2>Time entry</h2>{week_controls}"
+        f"<p class='muted'>Showing {days[0].isoformat()} through {days[-1].isoformat()}. "
+        "Each hour counts as 0.125 MD. Overtime codes are available for registered engagements. "
+        "Type an engagement code and choose a suggestion.</p>"
+        f"<datalist id='entry-code-suggestions'>{code_suggestions}</datalist>"
+        f"<div class='grid entry-grid'><table><tr><th>Date</th>{slot_headers}</tr>{''.join(entry_rows)}</table></div></div>"
+    )
     return render(content, auditor_accounts=auditor_accounts, codes=codes, entry_codes=entry_codes, selected=selected, days=days, slots=slots, values=values, role="admin" if is_manager() else session.get("role"))
 
 
@@ -720,9 +771,20 @@ def monitoring_page():
     return render(content)
 
 
-@management_only
+@signed_in
 def report_page():
     connection = db()
+    current_account = connection.execute(
+        "SELECT role, auditor, audit_type FROM accounts WHERE username=?",
+        (session.get("username"),),
+    ).fetchone()
+    if not current_account or current_account["role"] not in {"admin", "TL", "auditor"}:
+        connection.close()
+        return "Report access required", 403
+    audit_type = current_account["audit_type"]
+    if audit_type not in AUDIT_TYPE_LABELS:
+        connection.close()
+        return "A valid audit group is required to view reports.", 403
     today = date.today()
     try:
         end_date = date.fromisoformat(request.args.get("end", today.isoformat()))
@@ -732,19 +794,17 @@ def report_page():
     if start_date > end_date:
         start_date, end_date = end_date, start_date
 
-    audit_type = request.args.get("audit_type", "all").lower()
     prefix_map = {"it": "IT", "business": "BP", "branch": "BR"}
-    auditors = connection.execute("SELECT auditor AS initials, username AS name, audit_type FROM accounts WHERE role='auditor' AND auditor <> '' ORDER BY auditor").fetchall()
+    auditors = connection.execute(
+        "SELECT auditor AS initials, username AS name, audit_type FROM accounts "
+        "WHERE role='auditor' AND auditor<>'' AND audit_type=? ORDER BY auditor",
+        (audit_type,),
+    ).fetchall()
     selected_auditor = request.args.get("auditor", "").strip().upper()
-    if session.get("role") == "auditor":
-        selected_auditor = session.get("auditor", "")
-        account = next((row for row in auditors if row["initials"] == selected_auditor), None)
-        audit_type = account["audit_type"] if account else "all"
+    if current_account["role"] == "auditor":
+        selected_auditor = current_account["auditor"]
     elif selected_auditor not in {row["initials"] for row in auditors}:
         selected_auditor = ""
-    selected_account = next((row for row in auditors if row["initials"] == selected_auditor), None)
-    if selected_account and selected_account["audit_type"] == "branch":
-        audit_type = "branch"
     visible_auditors = [row for row in auditors if row["initials"] == selected_auditor] if selected_auditor else auditors
     prefix = prefix_map.get(audit_type)
     code_rows = connection.execute("SELECT code, description, kind FROM codes ORDER BY kind, code").fetchall()
@@ -755,39 +815,52 @@ def report_page():
         query += " AND auditor=?"
         params.append(selected_auditor)
     if audit_type == "branch":
-        query += " AND code LIKE 'BR%'"
+        query += " AND (code LIKE 'BR%' OR code IN (SELECT code FROM codes WHERE kind='admin'))"
     elif prefix:
-        query += " AND (code NOT LIKE 'IT%' AND code NOT LIKE 'BP%' AND code NOT LIKE 'BR%' OR code LIKE ?)"
+        query += " AND (code LIKE ? OR code IN (SELECT code FROM codes WHERE kind='admin'))"
         params.append(f"{prefix}%")
     query += " GROUP BY auditor, code"
     usage_rows = connection.execute(query, params).fetchall()
+    engagement_codes = {row["code"] for row in code_rows if row["kind"] in {"engagement", "overtime"}}
     totals = {row["initials"]: 0 for row in visible_auditors}
+    engagement_totals = {row["initials"]: 0 for row in visible_auditors}
+    non_engagement_totals = {row["initials"]: 0 for row in visible_auditors}
     code_totals = {}
     for row in usage_rows:
         totals[row["auditor"]] = totals.get(row["auditor"], 0) + row["md"]
+        target = engagement_totals if row["code"] in engagement_codes else non_engagement_totals
+        target[row["auditor"]] = target.get(row["auditor"], 0) + row["md"]
         code_totals[row["code"]] = code_totals.get(row["code"], 0) + row["md"]
-    engagement_codes = {row["code"] for row in code_rows if row["kind"] in {"engagement", "overtime"}}
-    max_total = max(totals.values(), default=0)
+    max_component = max(
+        max(engagement_totals.values(), default=0),
+        max(non_engagement_totals.values(), default=0),
+    )
     chart_width, chart_height, chart_bottom, chart_top = 900, 330, 270, 35
     chart_bars = []
-    bar_width = max(36, min(90, 700 // max(1, len(totals))))
-    chart_gap = 700 / max(1, len(totals))
+    chart_gap = 700 / max(1, len(visible_auditors))
+    bar_width = max(12, min(34, chart_gap * 0.32))
     for index, auditor in enumerate(visible_auditors):
         initials = auditor["initials"]
-        value = totals.get(initials, 0)
-        bar_height = 0 if not max_total else (value / max_total) * (chart_bottom - chart_top)
-        x = 100 + index * chart_gap + (chart_gap - bar_width) / 2
-        y = chart_bottom - bar_height
-        chart_bars.append(f"<rect x='{x:.1f}' y='{y:.1f}' width='{bar_width}' height='{bar_height:.1f}' rx='4' fill='#087f71'><title>{escape(initials)}: {value:.3f} MD</title></rect><text x='{x + bar_width / 2:.1f}' y='{max(22, y - 8):.1f}' text-anchor='middle' class='chart-value'>{value:.3f}</text><text x='{x + bar_width / 2:.1f}' y='298' text-anchor='middle' class='chart-label'>{escape(initials)}</text>")
-    chart = f"<svg class='report-chart' viewBox='0 0 {chart_width} {chart_height}' role='img' aria-label='Engagement usage in man-days per auditor'><line x1='90' y1='{chart_bottom}' x2='850' y2='{chart_bottom}' class='chart-axis'/><line x1='90' y1='{chart_top}' x2='90' y2='{chart_bottom}' class='chart-axis'/><text x='18' y='42' class='chart-axis-label'>MD</text>{''.join(chart_bars) if chart_bars else '<text x="450" y="160" text-anchor="middle" class="chart-empty">No engagement usage in this date range</text>'}</svg>"
+        engagement_value = engagement_totals.get(initials, 0)
+        non_engagement_value = non_engagement_totals.get(initials, 0)
+        engagement_height = 0 if not max_component else (engagement_value / max_component) * (chart_bottom - chart_top)
+        non_engagement_height = 0 if not max_component else (non_engagement_value / max_component) * (chart_bottom - chart_top)
+        group_center = 100 + index * chart_gap + chart_gap / 2
+        engagement_x = group_center - bar_width - 3
+        non_engagement_x = group_center + 3
+        engagement_y = chart_bottom - engagement_height
+        non_engagement_y = chart_bottom - non_engagement_height
+        chart_bars.append(f"<rect x='{engagement_x:.1f}' y='{engagement_y:.1f}' width='{bar_width:.1f}' height='{engagement_height:.1f}' fill='#087f71'><title>{escape(initials)} engagement: {engagement_value:.3f} MD</title></rect><rect x='{non_engagement_x:.1f}' y='{non_engagement_y:.1f}' width='{bar_width:.1f}' height='{non_engagement_height:.1f}' fill='#e56d50'><title>{escape(initials)} non-engagement: {non_engagement_value:.3f} MD</title></rect><text x='{engagement_x + bar_width / 2:.1f}' y='{max(22, engagement_y - 5):.1f}' text-anchor='middle' class='chart-value'>{engagement_value:.3f}</text><text x='{non_engagement_x + bar_width / 2:.1f}' y='{max(22, non_engagement_y - 5):.1f}' text-anchor='middle' class='chart-value'>{non_engagement_value:.3f}</text><text x='{group_center:.1f}' y='298' text-anchor='middle' class='chart-label'>{escape(initials)}</text>")
+    chart = f"<svg class='report-chart' viewBox='0 0 {chart_width} {chart_height}' role='img' aria-label='Side-by-side engagement and non-engagement man-days per auditor'><line x1='90' y1='{chart_bottom}' x2='850' y2='{chart_bottom}' class='chart-axis'/><line x1='90' y1='{chart_top}' x2='90' y2='{chart_bottom}' class='chart-axis'/><text x='18' y='42' class='chart-axis-label'>MD</text>{''.join(chart_bars) if chart_bars else '<text x="450" y="160" text-anchor="middle" class="chart-empty">No usage in this date range</text>'}</svg><div style='display:flex;gap:18px;justify-content:center;font-size:12px;color:var(--ink-soft)'><span><i style='display:inline-block;width:11px;height:11px;background:#087f71;margin-right:6px'></i>Engagement MD</span><span><i style='display:inline-block;width:11px;height:11px;background:#e56d50;margin-right:6px'></i>Non-engagement MD</span></div>"
     chart_rows = "".join(f"<tr><td>{escape(row['initials'])}</td><td>{escape(row['name'] or '-')}</td><td>{escape(AUDIT_TYPE_LABELS.get(row['audit_type'], 'IT Audit'))}</td><td>{totals.get(row['initials'], 0):.3f}</td></tr>" for row in visible_auditors)
     code_breakdown = "".join(f"<tr><td>{escape(code)}</td><td>{escape(next((row['description'] for row in code_rows if row['code'] == code), '-'))}</td><td>{value:.3f}</td></tr>" for code, value in sorted(code_totals.items()) if code in engagement_codes)
     non_engagement_breakdown = "".join(f"<tr><td>{escape(code)}</td><td>{escape(next((row['description'] for row in code_rows if row['code'] == code), '-'))}</td><td>{value:.3f}</td></tr>" for code, value in sorted(code_totals.items()) if code not in engagement_codes)
     auditor_options = "".join(f"<option value='{escape(row['initials'])}' {'selected' if selected_auditor == row['initials'] else ''}>{escape(row['initials'])} ({escape(row['name'])})</option>" for row in auditors)
-    group_options = "".join(f"<option value='{value}' {'selected' if audit_type == value else ''}>{label}</option>" for value, label in (("all", "All groups"), *AUDIT_TYPE_LABELS.items()))
-    filter_form = f"<form method='get' class='module-form'><input type='hidden' name='tab' value='report'><label>Auditor<select name='auditor' {'disabled' if session.get('role') == 'auditor' else ''}><option value=''>All auditors</option>{auditor_options}</select></label><label>Audit group<select name='audit_type' {'disabled' if session.get('role') == 'auditor' else ''}>{group_options}</select></label><label>Start date<input type='date' name='start' value='{start_date.isoformat()}' required></label><label>End date<input type='date' name='end' value='{end_date.isoformat()}' required></label><button class='btn'>Generate report</button></form>"
-    non_engagement_section = "" if audit_type == "branch" else f"<h3>Non-engagement usage</h3><table><tr><th>Code</th><th>Description</th><th>Total MD</th></tr>{non_engagement_breakdown or '<tr><td colspan=3>No non-engagement usage recorded</td></tr>'}</table>"
-    content = f"<div class='card'><h2>Usage report</h2><p class='muted'>{'Branch engagement codes entered' if audit_type == 'branch' else 'Man-days recorded'} for the selected date range.</p>{filter_form}<div class='report-chart-wrap'>{chart}</div><div class='report-grid'><section><h3>Usage by auditor</h3><table><tr><th>Auditor</th><th>Name</th><th>Auditor group</th><th>Total MD</th></tr>{chart_rows}</table></section><section><h3>Engagement usage</h3><table><tr><th>Code</th><th>Engagement</th><th>Total MD</th></tr>{code_breakdown or '<tr><td colspan=3>No engagement usage recorded</td></tr>'}</table>{non_engagement_section}</section></div></div>"
+    group_label = AUDIT_TYPE_LABELS[audit_type]
+    auditor_filter = f"<label>Auditor<select name='auditor' disabled><option selected>{escape(current_account['auditor'])}</option></select></label>" if current_account["role"] == "auditor" else f"<label>Auditor<select name='auditor'><option value=''>All {escape(group_label)} auditors</option>{auditor_options}</select></label>"
+    filter_form = f"<form method='get' class='module-form'><input type='hidden' name='tab' value='report'>{auditor_filter}<label>Audit group<input value='{escape(group_label)}' readonly></label><label>Start date<input type='date' name='start' value='{start_date.isoformat()}' required></label><label>End date<input type='date' name='end' value='{end_date.isoformat()}' required></label><button class='btn'>Generate report</button></form>"
+    non_engagement_section = f"<h3>Non-engagement usage</h3><table><tr><th>Code</th><th>Description</th><th>Total MD</th></tr>{non_engagement_breakdown or '<tr><td colspan=3>No non-engagement usage recorded</td></tr>'}</table>"
+    content = f"<div class='card'><h2>{escape(group_label)} usage report</h2><p class='muted'>Engagement and non-engagement man-days for the selected date range. This report is limited to the signed-in account's audit group.</p>{filter_form}<div class='report-chart-wrap'>{chart}</div><div class='report-grid'><section><h3>Usage by auditor</h3><table><tr><th>Auditor</th><th>Name</th><th>Auditor group</th><th>Total MD</th></tr>{chart_rows}</table></section><section><h3>Engagement usage</h3><table><tr><th>Code</th><th>Engagement</th><th>Total MD</th></tr>{code_breakdown or '<tr><td colspan=3>No engagement usage recorded</td></tr>'}</table>{non_engagement_section}</section></div></div>"
     connection.close()
     return render(content)
 
