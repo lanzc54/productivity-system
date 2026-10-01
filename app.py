@@ -89,6 +89,7 @@ app.config.update(
 )
 DB_PATH = os.environ.get("PRODUCTIVITY_DB", os.path.join(os.path.dirname(__file__), "productivity.db"))
 MD_PER_SLOT = 0.125
+MANAGER_ROLES = {"admin", "TL"}
 
 DEFAULT_ENGAGEMENTS = [
     ("ITRA-NAPP-H001", "Mobile/Telco Management"),
@@ -335,6 +336,7 @@ def init_db():
         CREATE TABLE IF NOT EXISTS codes (code TEXT NOT NULL, description TEXT NOT NULL, kind TEXT NOT NULL, year INTEGER NOT NULL DEFAULT 2026, annual_budget REAL, auditor_budget REAL, PRIMARY KEY (code, kind, year));
         CREATE TABLE IF NOT EXISTS entries (auditor TEXT NOT NULL, work_date TEXT NOT NULL, slot TEXT NOT NULL, code TEXT NOT NULL, PRIMARY KEY (auditor, work_date, slot));
         CREATE TABLE IF NOT EXISTS engagement_assignments (code TEXT NOT NULL, year INTEGER NOT NULL, auditor TEXT NOT NULL, budget_md REAL, PRIMARY KEY (code, year, auditor));
+        CREATE TABLE IF NOT EXISTS weekly_engagement_assignments (week_start TEXT NOT NULL, auditor TEXT NOT NULL, code TEXT NOT NULL, PRIMARY KEY (week_start, auditor));
         CREATE TABLE IF NOT EXISTS it_engagements (engagement_code TEXT PRIMARY KEY, name TEXT NOT NULL, year INTEGER NOT NULL DEFAULT 2026);
         CREATE TABLE IF NOT EXISTS business_process_engagements (engagement_code TEXT PRIMARY KEY, name TEXT NOT NULL, year INTEGER NOT NULL DEFAULT 2026);
         CREATE TABLE IF NOT EXISTS branch_audit_engagements (engagement_code TEXT PRIMARY KEY, name TEXT NOT NULL, year INTEGER NOT NULL DEFAULT 2026);
@@ -357,6 +359,7 @@ def init_db():
         except Exception:
             pass
     connection.execute("UPDATE accounts SET audit_type='it' WHERE audit_type IS NULL OR audit_type NOT IN ('it', 'business', 'branch')")
+    connection.execute("UPDATE codes SET annual_budget=NULL, auditor_budget=NULL WHERE kind='engagement' AND code LIKE 'BR%'")
 
     if connection.execute("SELECT COUNT(*) FROM accounts").fetchone()[0] == 0:
         connection.execute("INSERT INTO accounts(username, password_hash, role, auditor, audit_type) VALUES (?, ?, 'admin', '', 'it')", ("admin", password_hash("ChangeMe123!")))
@@ -423,6 +426,19 @@ def admin_only(view):
     return wrapped
 
 
+def management_only(view):
+    @wraps(view)
+    def wrapped(*args, **kwargs):
+        if session.get("role") not in MANAGER_ROLES:
+            return "Admin access required", 403
+        return view(*args, **kwargs)
+    return wrapped
+
+
+def is_manager():
+    return session.get("role") in MANAGER_ROLES
+
+
 def week_start(value: str | None) -> date:
     selected = date.fromisoformat(value) if value else date.today()
     return selected - timedelta(days=selected.weekday())
@@ -440,10 +456,11 @@ PAGE = """<!doctype html><html lang='en'><head><meta charset='utf-8'><meta name=
 
 def render(content, **context):
     tabs = [("entry", "Time entry"), ("monitoring", "Monitoring"), ("engagements", "Engagements"), ("admin", "Non-engagement codes"), ("auditors", "Auditors")]
-    if session.get("role") == "admin": tabs.extend([("report", "Report"), ("accounts", "Accounts")])
+    if is_manager(): tabs.extend([("report", "Report"), ("accounts", "Accounts")])
     context = {**context, "csrf_token": generate_csrf_token()}
     rendered_content = "<style>.entry-grid .entry-code-input{width:190px}.entry-grid table{min-width:1500px}</style>" + render_template_string(content, **context)
     rendered_content += "<script>document.addEventListener('submit',function(event){if(event.target.action.includes('/entry'))sessionStorage.setItem('timeEntryScroll',String(window.scrollY));});window.addEventListener('load',function(){var scroll=sessionStorage.getItem('timeEntryScroll');if(scroll!==null){window.scrollTo(0,Number(scroll));sessionStorage.removeItem('timeEntryScroll');}});</script>"
+    rendered_content += "<script>document.addEventListener('input',function(event){if(event.target.name==='code'&&event.target.form){event.target.form.querySelectorAll('[data-budget-field]').forEach(function(field){field.hidden=event.target.value.trim().toUpperCase().startsWith('BR');});}});</script>"
     return render_template_string(PAGE, content=rendered_content, user=session.get("username"), role=session.get("role", "").title(), tabs=tabs, csrf_token=context["csrf_token"])
 
 
@@ -483,8 +500,9 @@ def home():
 def entry_page():
     connection = db(); account = connection.execute("SELECT auditor FROM accounts WHERE username=? AND role='auditor'", (session.get("username"),)).fetchone(); auditor_accounts = connection.execute("SELECT auditor, username FROM accounts WHERE role='auditor' AND auditor <> '' ORDER BY auditor").fetchall(); codes = connection.execute("SELECT * FROM codes ORDER BY kind, code").fetchall()
     assignments = {(row["code"], row["year"], row["auditor"]) for row in connection.execute("SELECT code, year, auditor FROM engagement_assignments").fetchall()}
-    selected = account["auditor"] if account else (request.args.get("auditor", "").strip().upper() if session.get("role") == "admin" else "")
+    selected = account["auditor"] if account else (request.args.get("auditor", "").strip().upper() if is_manager() else "")
     start = week_start(request.args.get("week")); days = [start + timedelta(days=i) for i in range(7)]; slots = [f"{h}-{h+1}" for h in range(6, 24)]
+    weekly_assignments = {(row["code"], row["auditor"]) for row in connection.execute("SELECT code, auditor FROM weekly_engagement_assignments WHERE week_start=?", (days[0].isoformat(),)).fetchall()}
     default_entries = []
     for day in days:
         default_entries.append((selected, day.isoformat(), "12-13", "LBRK-NAPP-0000"))
@@ -497,16 +515,20 @@ def entry_page():
     entry_codes = []
     for code in codes:
         if code["year"] == days[0].year:
-            assigned = (engagement_base_code(code["code"]), code["year"], selected) in assignments
+            base_code = engagement_base_code(code["code"])
+            if base_code.startswith("BR"):
+                assigned = (base_code, selected) in weekly_assignments
+            else:
+                assigned = (base_code, code["year"], selected) in assignments or (base_code, selected) in weekly_assignments
             is_admin_code = code["kind"] == "admin"
             is_engagement_code = code["kind"] in {"engagement", "overtime"}
-            if is_admin_code or (is_engagement_code and (session.get("role") == "admin" or assigned)):
+            if is_admin_code or (is_engagement_code and (is_manager() or assigned)):
                 entry_codes.append(code["code"])
             parts = code["code"].split("-")
-            if len(parts) == 3 and parts[1] == "NAPP" and code["kind"] == "engagement" and (session.get("role") == "admin" or assigned):
+            if len(parts) == 3 and parts[1] == "NAPP" and code["kind"] == "engagement" and (is_manager() or assigned):
                 entry_codes.extend(f"{parts[0]}-{subcode}-{parts[2]}" for subcode in sorted(OVERTIME_SUBCODES))
     content = """<div class='card'><h2>Time entry</h2>{% if role == 'admin' %}<form method='get'><input type='hidden' name='tab' value='entry'><label>Auditor<select name='auditor' onchange='this.form.submit()'><option value=''>Select auditor account</option>{% for account in auditor_accounts %}<option value='{{account.auditor}}' {% if account.auditor==selected %}selected{% endif %}>{{account.auditor}} ({{account.username}})</option>{% endfor %}</select></label></form>{% endif %}<p class='muted'>Each hour counts as 0.125 MD. Overtime codes are available for registered engagements. Type an engagement code and choose a suggestion.</p><datalist id='entry-code-suggestions'>{% for code in entry_codes %}<option value='{{code}}'></option>{% endfor %}</datalist><div class='grid entry-grid'><table><tr><th>Date</th>{% for slot in slots %}<th>{{slot}}</th>{% endfor %}</tr>{% for day in days %}<tr><td><b>{{day.strftime('%a')}}</b><br>{{day.isoformat()}}</td>{% for slot in slots %}<td><form method='post' action='{{url_for("save_entry")}}'><input type='hidden' name='csrf_token' value='{{ csrf_token }}'><input type='hidden' name='auditor' value='{{selected}}'><input type='hidden' name='work_date' value='{{day.isoformat()}}'><input type='hidden' name='slot' value='{{slot}}'><input class='entry-code-input' name='typed_code' list='entry-code-suggestions' value='{{values.get((day.isoformat(),slot), "")}}' placeholder='Type code' onchange='this.form.submit()' aria-label='Type engagement code'></form></td>{% endfor %}</tr>{% endfor %}</table></div></div>"""
-    return render(content, auditor_accounts=auditor_accounts, codes=codes, entry_codes=entry_codes, selected=selected, days=days, slots=slots, values=values, role=session.get("role"))
+    return render(content, auditor_accounts=auditor_accounts, codes=codes, entry_codes=entry_codes, selected=selected, days=days, slots=slots, values=values, role="admin" if is_manager() else session.get("role"))
 
 
 @app.post("/entry")
@@ -523,10 +545,17 @@ def save_entry():
             registered = connection.execute("SELECT 1 FROM codes WHERE code=? AND kind='engagement' AND year=?", (base_code, code_year)).fetchone()
     if registered and session.get("role") == "auditor":
         base_code = engagement_base_code(code)
-        assigned = connection.execute("SELECT 1 FROM engagement_assignments WHERE code=? AND year=? AND auditor=?", (base_code, code_year, auditor)).fetchone()
         code_kind = connection.execute("SELECT kind FROM codes WHERE code=? AND year=?", (base_code, code_year)).fetchone()
-        if code_kind and code_kind["kind"] == "engagement" and not assigned:
-            registered = None
+        if code_kind and code_kind["kind"] == "engagement":
+            week = week_start(request.form["work_date"]).isoformat()
+            if base_code.startswith("BR"):
+                assigned = connection.execute("SELECT 1 FROM weekly_engagement_assignments WHERE week_start=? AND auditor=? AND code=?", (week, auditor, base_code)).fetchone()
+            else:
+                assigned = connection.execute("SELECT 1 FROM engagement_assignments WHERE code=? AND year=? AND auditor=?", (base_code, code_year, auditor)).fetchone()
+                if not assigned:
+                    assigned = connection.execute("SELECT 1 FROM weekly_engagement_assignments WHERE week_start=? AND auditor=? AND code=?", (week, auditor, base_code)).fetchone()
+            if not assigned:
+                registered = None
     if code and registered: connection.execute("INSERT OR REPLACE INTO entries VALUES (?, ?, ?, ?)", (*params, code))
     else: connection.execute("DELETE FROM entries WHERE auditor=? AND work_date=? AND slot=?", params)
     connection.commit(); connection.close()
@@ -540,6 +569,7 @@ def codes_page(tab):
     overtime_rows = connection.execute("SELECT * FROM codes WHERE kind='overtime' ORDER BY code").fetchall() if kind == "engagement" else []
     auditors = connection.execute("SELECT auditor AS initials, username AS name, audit_type FROM accounts WHERE role='auditor' AND auditor <> '' ORDER BY auditor").fetchall() if kind == "engagement" else []
     assignments = connection.execute("SELECT * FROM engagement_assignments ORDER BY year DESC, code, auditor").fetchall() if kind == "engagement" else []
+    weekly_assignments = connection.execute("SELECT * FROM weekly_engagement_assignments ORDER BY week_start DESC, auditor").fetchall() if kind == "engagement" else []
     title = "Engagement codes" if kind == "engagement" else "Non-engagement codes" if kind == "admin" else "Overtime engagement codes"
     fields = "<th>Code</th><th>Description</th>" + ("<th>Year</th><th>Annual budget MD</th><th>Budgeted MD / auditor</th>" if kind == "engagement" else "<th>Year</th>" if kind == "overtime" else "")
     body = "".join(f"<tr><td>{escape(row['code'])}</td><td>{escape(row['description'])}</td>" + (f"<td>{row['year']}</td><td>{row['annual_budget'] or '-'}</td><td>{row['auditor_budget'] or '-'}</td>" if kind == "engagement" else f"<td>{row['year']}</td>" if kind == "overtime" else "") + "</tr>" for row in rows)
@@ -550,15 +580,20 @@ def codes_page(tab):
         section_specs = (("IT engagements", "IT"), ("Business process engagements", "BP"), ("Branch audit engagements", "BR"))
         for section_title, prefix in section_specs:
             section_rows = [row for row in rows if row["code"].startswith(prefix)]
-            section_body = "".join(f"<tr><td>{escape(row['code'])}</td><td>{escape(row['description'])}</td><td>{row['year']}</td><td>{row['annual_budget'] or '-'}</td><td>{row['auditor_budget'] or '-'}</td></tr>" for row in section_rows)
-            catalog_sections += f"<section><h3>{section_title}</h3><table><tr><th>Engagement Code</th><th>Name of Engagement</th><th>Year</th><th>Annual budget MD</th><th>Budgeted MD / auditor</th></tr>{section_body}</table></section>"
+            if prefix == "BR":
+                section_body = "".join(f"<tr><td>{escape(row['code'])}</td><td>{escape(row['description'])}</td><td>{row['year']}</td></tr>" for row in section_rows)
+                section_headers = "<th>Engagement Code</th><th>Name of Engagement</th><th>Year</th>"
+            else:
+                section_body = "".join(f"<tr><td>{escape(row['code'])}</td><td>{escape(row['description'])}</td><td>{row['year']}</td><td>{row['annual_budget'] or '-'}</td><td>{row['auditor_budget'] or '-'}</td></tr>" for row in section_rows)
+                section_headers = "<th>Engagement Code</th><th>Name of Engagement</th><th>Year</th><th>Annual budget MD</th><th>Budgeted MD / auditor</th>"
+            catalog_sections += f"<section><h3>{section_title}</h3><table><tr>{section_headers}</tr>{section_body}</table></section>"
     code_parts = "<label>Main code<select name='main_code' required><option value=''>Select</option>" + "".join(f"<option>{code}</option>" for code in sorted(MAIN_CODE_OPTIONS)) + "</select></label><label>Sub code<select name='sub_code' required><option value=''>Select</option>" + "".join(f"<option>{code}</option>" for code in sorted(SUB_CODE_OPTIONS)) + "</select></label><label>Series code<input name='series_code' placeholder='H001 / M001 / 0000' required></label>"
     admin_code_parts = "<label>Main code<select name='main_code' required><option value=''>Select</option>" + "".join(f"<option>{code}</option>" for code in ADMIN_MAIN_CODE_OPTIONS) + "</select></label><label>Sub code<select name='sub_code' required><option value='NAPP' selected>NAPP</option></select></label><label>Series code<input name='series_code' value='0000' readonly></label>"
     engagement_code_input = "<label>Engagement code<input name='code' placeholder='ITPP-NAPP-H001' required></label>"
     code_input = engagement_code_input if kind == "engagement" else code_parts if kind == "overtime" else admin_code_parts
-    if session.get("role") == "admin":
+    if is_manager():
         if kind == "engagement":
-            add_form = f"<form class='module-form' method='post' action='{url_for('add_code')}'>{csrf_field()}<input type='hidden' name='kind' value='{kind}'>{code_input}<label>Description / particulars<input name='description' required></label><label>Year<input name='year' type='number' value='" + str(date.today().year) + "'></label><label>Budget MD<input name='annual_budget'></label><label>Budget / auditor<input name='auditor_budget'></label><button class='btn'>Add / update</button><button class='btn danger' type='submit' formaction='" + url_for("delete_code_by_details") + "'>Delete</button></form>"
+            add_form = f"<form class='module-form' method='post' action='{url_for('add_code')}'>{csrf_field()}<input type='hidden' name='kind' value='{kind}'>{code_input}<label>Description / particulars<input name='description' required></label><label>Year<input name='year' type='number' value='" + str(date.today().year) + "'></label><label data-budget-field>Budget MD<input name='annual_budget'></label><label data-budget-field>Budget / auditor<input name='auditor_budget'></label><button class='btn'>Add / update</button><button class='btn danger' type='submit' formaction='" + url_for("delete_code_by_details") + "'>Delete</button></form>"
         elif kind == "overtime":
             add_form = f"<form class='module-form' method='post' action='{url_for('add_code')}'>{csrf_field()}<input type='hidden' name='kind' value='{kind}'>{code_input}<label>Description / particulars<input name='description' required></label><label>Year<input name='year' type='number' value='" + str(date.today().year) + "'></label><button class='btn'>Add / update</button></form>"
         else:
@@ -567,10 +602,11 @@ def codes_page(tab):
         add_form = ""
     overtime_body = "".join(f"<tr><td>{escape(row['code'])}</td><td>{escape(row['description'])}</td><td>{row['year']}</td></tr>" for row in overtime_rows)
     overtime_table = f"<section><h3>Encoded overtime</h3><p class='muted'>Create overtime codes from the form above by selecting an overtime subcode. They appear here and are available in Time Entry.</p><table><tr><th>Code</th><th>Description / particulars</th><th>Year</th></tr>{overtime_body}</table></section>" if kind == "engagement" else ""
-    assignment_form = f"<form class='module-form' method='post' action='{url_for('assign_engagement')}'>{csrf_field()}<label>Engagement code<input name='code' placeholder='ITPP-NAPP-H001' required></label><label>Year<input name='year' type='number' value='{date.today().year}' required></label><label>Auditor<select name='auditor' required>" + "".join(f"<option value='{a['initials']}'>{a['initials']} {a['name']} ({AUDIT_TYPE_LABELS.get(a['audit_type'], 'IT Audit')})</option>" for a in auditors) + "</select></label><button class='btn'>Assign engagement</button></form><p class='muted'>IT, Business Process, and Branch Audit engagements can only be assigned to auditors in the matching account group.</p>" if kind == "engagement" and session.get("role") == "admin" else ""
-    assignment_body = "".join(f"<tr><td>{escape(row['code'])}</td><td>{row['year']}</td><td>{escape(row['auditor'])}</td>" + (f"<td><form method='post' action='{url_for('delete_assignment')}'>{csrf_field()}<input type='hidden' name='code' value='{escape(row['code'])}'><input type='hidden' name='year' value='{row['year']}'><input type='hidden' name='auditor' value='{escape(row['auditor'])}'><button class='btn danger'>Delete</button></form></td>" if session.get("role") == "admin" else "") + "</tr>" for row in assignments)
-    assignment_actions = "<th>Actions</th>" if session.get("role") == "admin" else ""
-    assignment_table = f"<section><h3>Engagement assignments</h3><p class='muted'>Assigned auditors see the engagement and its overtime codes in Time Entry. The budget remains in the main Engagements table.</p>{assignment_form}<table><tr><th>Engagement code</th><th>Year</th><th>Auditor</th>{assignment_actions}</tr>{assignment_body}</table></section>" if kind == "engagement" else ""
+    assignment_form = (f"<form class='module-form' method='post' action='{url_for('assign_engagement')}'>{csrf_field()}<label>Engagement code<input name='code' placeholder='BRSP-NAPP-0000' required></label><label>Week starting<input name='week_start' type='date' value='{week_start(date.today().isoformat()).isoformat()}' required></label><label>Auditor<select name='auditor' required>" + "".join(f"<option value='{a['initials']}'>{a['initials']} {a['name']} ({AUDIT_TYPE_LABELS.get(a['audit_type'], 'IT Audit')})</option>" for a in auditors) + "</select></label><button class='btn'>Assign engagement</button></form><p class='muted'>The assignment applies to the whole week starting on the selected date. Branch auditors can enter only their assigned branch engagement for that week.</p>") if kind == "engagement" and is_manager() else ""
+    assignment_body = "".join(f"<tr><td>{escape(row['code'])}</td><td>Year {row['year']}</td><td>{escape(row['auditor'])}</td>" + (f"<td><form method='post' action='{url_for('delete_assignment')}'>{csrf_field()}<input type='hidden' name='code' value='{escape(row['code'])}'><input type='hidden' name='year' value='{row['year']}'><input type='hidden' name='auditor' value='{escape(row['auditor'])}'><button class='btn danger'>Delete</button></form></td>" if is_manager() else "") + "</tr>" for row in assignments)
+    assignment_body += "".join(f"<tr><td>{escape(row['code'])}</td><td>Week of {row['week_start']}</td><td>{escape(row['auditor'])}</td>" + (f"<td><form method='post' action='{url_for('delete_assignment')}'>{csrf_field()}<input type='hidden' name='code' value='{escape(row['code'])}'><input type='hidden' name='week_start' value='{row['week_start']}'><input type='hidden' name='auditor' value='{escape(row['auditor'])}'><button class='btn danger'>Delete</button></form></td>" if is_manager() else "") + "</tr>" for row in weekly_assignments)
+    assignment_actions = "<th>Actions</th>" if is_manager() else ""
+    assignment_table = f"<section><h3>Engagement assignments</h3>{assignment_form}<table><tr><th>Engagement code</th><th>Assignment period</th><th>Auditor</th>{assignment_actions}</tr>{assignment_body or '<tr><td colspan=4>No assignments recorded</td></tr>'}</table></section>" if kind == "engagement" else ""
     content = f"<div class='card'><h2>{title}</h2>{add_form}{admin_table}{catalog_sections}{overtime_table}{assignment_table}</div>"
     return render(content)
 
@@ -614,12 +650,19 @@ def monitoring_page():
         for row in codes:
             if audit_type_for_engagement(row["code"]) != audit_type:
                 continue
-            budget = float(row["auditor_budget"]) if row["auditor_budget"] is not None else None
             actual_cells = "".join(f"<td>{totals.get((row['code'], a['initials']), 0):.3f}</td>" for a in visible_auditors)
             total_actual = sum(totals.get((row["code"], a["initials"]), 0) for a in visible_auditors)
-            variance = "-" if budget is None or total_actual == 0 else f"{budget - total_actual:.3f}"
-            group_rows.append(f"<tr><td>{row['code']}</td><td>{row['description']}</td><td>{row['annual_budget'] or '-'}</td><td>{row['auditor_budget'] or '-'}</td>{actual_cells}<td>{variance}</td></tr>")
-        table_sections.append(f"<section><h3>{label}</h3><div class='grid'><table><tr><th>Code</th><th>Description</th><th>Annual budget MD</th><th>Budgeted MD / auditor</th>{actual_header}<th>Variance</th></tr>{''.join(group_rows) or '<tr><td colspan=99>No engagements in this audit group.</td></tr>'}</table></div></section>")
+            if audit_type == "branch":
+                group_rows.append(f"<tr><td>{row['code']}</td><td>{row['description']}</td>{actual_cells}<td>{total_actual:.3f}</td></tr>")
+            else:
+                budget = float(row["auditor_budget"]) if row["auditor_budget"] is not None else None
+                variance = "-" if budget is None or total_actual == 0 else f"{budget - total_actual:.3f}"
+                group_rows.append(f"<tr><td>{row['code']}</td><td>{row['description']}</td><td>{row['annual_budget'] or '-'}</td><td>{row['auditor_budget'] or '-'}</td>{actual_cells}<td>{variance}</td></tr>")
+        if audit_type == "branch":
+            section_headers = f"<th>Code</th><th>Description</th>{actual_header}<th>Total actual MD</th>"
+        else:
+            section_headers = f"<th>Code</th><th>Description</th><th>Annual budget MD</th><th>Budgeted MD / auditor</th>{actual_header}<th>Variance</th>"
+        table_sections.append(f"<section><h3>{label}</h3><div class='grid'><table><tr>{section_headers}</tr>{''.join(group_rows) or '<tr><td colspan=99>No engagements in this audit group.</td></tr>'}</table></div></section>")
     admin_header = "".join(f"<th>{a['initials']} MD used</th>" for a in visible_auditors)
     admin_body = "".join("<tr><td>{}</td><td>{}</td>{}<td>{:.3f}</td></tr>".format(row["code"], row["description"], "".join(f"<td>{totals.get((row['code'], a['initials']), 0):.3f}</td>" for a in visible_auditors), sum(totals.get((row["code"], a["initials"]), 0) for a in visible_auditors)) for row in admin_codes)
     year_picker = "<form method='get' class='module-form'><input type='hidden' name='tab' value='monitoring'><label>Year<select name='year' onchange='this.form.submit()'>" + "".join(f"<option value='{option}' {'selected' if option == year else ''}>{option}</option>" for option in sorted(years, reverse=True)) + "</select></label></form>"
@@ -628,7 +671,7 @@ def monitoring_page():
     return render(content)
 
 
-@admin_only
+@management_only
 def report_page():
     connection = db()
     today = date.today()
@@ -650,6 +693,9 @@ def report_page():
         audit_type = account["audit_type"] if account else "all"
     elif selected_auditor not in {row["initials"] for row in auditors}:
         selected_auditor = ""
+    selected_account = next((row for row in auditors if row["initials"] == selected_auditor), None)
+    if selected_account and selected_account["audit_type"] == "branch":
+        audit_type = "branch"
     visible_auditors = [row for row in auditors if row["initials"] == selected_auditor] if selected_auditor else auditors
     prefix = prefix_map.get(audit_type)
     code_rows = connection.execute("SELECT code, description, kind FROM codes ORDER BY kind, code").fetchall()
@@ -659,7 +705,9 @@ def report_page():
     if selected_auditor:
         query += " AND auditor=?"
         params.append(selected_auditor)
-    if prefix:
+    if audit_type == "branch":
+        query += " AND code LIKE 'BR%'"
+    elif prefix:
         query += " AND (code NOT LIKE 'IT%' AND code NOT LIKE 'BP%' AND code NOT LIKE 'BR%' OR code LIKE ?)"
         params.append(f"{prefix}%")
     query += " GROUP BY auditor, code"
@@ -689,13 +737,14 @@ def report_page():
     auditor_options = "".join(f"<option value='{escape(row['initials'])}' {'selected' if selected_auditor == row['initials'] else ''}>{escape(row['initials'])} ({escape(row['name'])})</option>" for row in auditors)
     group_options = "".join(f"<option value='{value}' {'selected' if audit_type == value else ''}>{label}</option>" for value, label in (("all", "All groups"), *AUDIT_TYPE_LABELS.items()))
     filter_form = f"<form method='get' class='module-form'><input type='hidden' name='tab' value='report'><label>Auditor<select name='auditor' {'disabled' if session.get('role') == 'auditor' else ''}><option value=''>All auditors</option>{auditor_options}</select></label><label>Audit group<select name='audit_type' {'disabled' if session.get('role') == 'auditor' else ''}>{group_options}</select></label><label>Start date<input type='date' name='start' value='{start_date.isoformat()}' required></label><label>End date<input type='date' name='end' value='{end_date.isoformat()}' required></label><button class='btn'>Generate report</button></form>"
-    content = f"<div class='card'><h2>Usage report</h2><p class='muted'>Man-days recorded per auditor for the selected date range.</p>{filter_form}<div class='report-chart-wrap'>{chart}</div><div class='report-grid'><section><h3>Usage by auditor</h3><table><tr><th>Auditor</th><th>Name</th><th>Auditor group</th><th>Total MD</th></tr>{chart_rows}</table></section><section><h3>Engagement usage</h3><table><tr><th>Code</th><th>Engagement</th><th>Total MD</th></tr>{code_breakdown or '<tr><td colspan=3>No engagement usage recorded</td></tr>'}</table><h3>Non-engagement usage</h3><table><tr><th>Code</th><th>Description</th><th>Total MD</th></tr>{non_engagement_breakdown or '<tr><td colspan=3>No non-engagement usage recorded</td></tr>'}</table></section></div></div>"
+    non_engagement_section = "" if audit_type == "branch" else f"<h3>Non-engagement usage</h3><table><tr><th>Code</th><th>Description</th><th>Total MD</th></tr>{non_engagement_breakdown or '<tr><td colspan=3>No non-engagement usage recorded</td></tr>'}</table>"
+    content = f"<div class='card'><h2>Usage report</h2><p class='muted'>{'Branch engagement codes entered' if audit_type == 'branch' else 'Man-days recorded'} for the selected date range.</p>{filter_form}<div class='report-chart-wrap'>{chart}</div><div class='report-grid'><section><h3>Usage by auditor</h3><table><tr><th>Auditor</th><th>Name</th><th>Auditor group</th><th>Total MD</th></tr>{chart_rows}</table></section><section><h3>Engagement usage</h3><table><tr><th>Code</th><th>Engagement</th><th>Total MD</th></tr>{code_breakdown or '<tr><td colspan=3>No engagement usage recorded</td></tr>'}</table>{non_engagement_section}</section></div></div>"
     connection.close()
     return render(content)
 
 
 @app.post("/auditors")
-@admin_only
+@management_only
 def add_auditor():
     initials = request.form["initials"].strip().upper()
     connection = db(); connection.execute("INSERT OR REPLACE INTO auditors(initials, name, audit_type) VALUES (?, ?, 'it')", (initials, request.form.get("name", "").strip())); connection.commit(); connection.close()
@@ -703,7 +752,7 @@ def add_auditor():
 
 
 @app.post("/codes")
-@admin_only
+@management_only
 def add_code():
     kind = request.form["kind"]
     try:
@@ -721,7 +770,11 @@ def add_code():
     except ValueError:
         return "Invalid engagement code parts", 400
     stored_kind = "overtime" if kind == "engagement" and len(code.split("-")) == 3 and code.split("-")[1] in OVERTIME_SUBCODES else kind
-    values = (code, request.form["description"].strip(), stored_kind, int(request.form.get("year", date.today().year)), request.form.get("annual_budget") or None, request.form.get("auditor_budget") or None)
+    annual_budget = request.form.get("annual_budget") or None
+    auditor_budget = request.form.get("auditor_budget") or None
+    if code.startswith("BR"):
+        annual_budget = auditor_budget = None
+    values = (code, request.form["description"].strip(), stored_kind, int(request.form.get("year", date.today().year)), annual_budget, auditor_budget)
     connection = db(); connection.execute("INSERT INTO codes(code, description, kind, year, annual_budget, auditor_budget) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(code, kind, year) DO UPDATE SET description=excluded.description, annual_budget=COALESCE(excluded.annual_budget, codes.annual_budget), auditor_budget=COALESCE(excluded.auditor_budget, codes.auditor_budget)", values)
     catalog_table = catalog_table_for_code(code) if stored_kind == "engagement" else None
     if catalog_table:
@@ -731,9 +784,20 @@ def add_code():
 
 
 @app.post("/assignments")
-@admin_only
+@management_only
 def assign_engagement():
-    code = request.form["code"].strip().upper(); year = int(request.form["year"]); auditor = request.form["auditor"].strip().upper()
+    code = request.form["code"].strip().upper(); auditor = request.form["auditor"].strip().upper()
+    selected_week = request.form.get("week_start", "").strip()
+    if selected_week:
+        try:
+            assignment_date = date.fromisoformat(selected_week)
+        except ValueError:
+            return "Invalid assignment week.", 400
+        year = assignment_date.year
+        assignment_week = week_start(selected_week).isoformat()
+    else:
+        year = int(request.form["year"])
+        assignment_week = None
     connection = db(); exists = connection.execute("SELECT 1 FROM codes WHERE code=? AND kind='engagement' AND year=?", (code, year)).fetchone()
     if not exists:
         connection.close()
@@ -744,6 +808,10 @@ def assign_engagement():
         expected_group = AUDIT_TYPE_LABELS[required_audit_type]
         connection.close()
         return f"{code} can only be assigned to an auditor in the {expected_group} account group.", 400
+    if assignment_week:
+        connection.execute("INSERT INTO weekly_engagement_assignments(week_start, auditor, code) VALUES (?, ?, ?) ON CONFLICT(week_start, auditor) DO UPDATE SET code=excluded.code", (assignment_week, auditor, code))
+        connection.commit(); connection.close()
+        return redirect(url_for("home", tab="engagements"))
     existing = connection.execute("SELECT auditor FROM engagement_assignments WHERE code=? AND year=?", (code, year)).fetchone()
     if existing and existing["auditor"] != auditor:
         connection.close()
@@ -753,20 +821,24 @@ def assign_engagement():
 
 
 @app.post("/assignments/delete")
-@admin_only
+@management_only
 def delete_assignment():
     code = request.form["code"].strip().upper()
-    year = int(request.form["year"])
     auditor = request.form["auditor"].strip().upper()
     connection = db()
-    connection.execute("DELETE FROM engagement_assignments WHERE code=? AND year=? AND auditor=?", (code, year, auditor))
+    selected_week = request.form.get("week_start", "").strip()
+    if selected_week:
+        connection.execute("DELETE FROM weekly_engagement_assignments WHERE code=? AND week_start=? AND auditor=?", (code, selected_week, auditor))
+    else:
+        year = int(request.form["year"])
+        connection.execute("DELETE FROM engagement_assignments WHERE code=? AND year=? AND auditor=?", (code, year, auditor))
     connection.commit()
     connection.close()
     return redirect(url_for("home", tab="engagements"))
 
 
 @app.post("/codes/delete")
-@admin_only
+@management_only
 def delete_code_by_details():
     kind = request.form.get("kind", "engagement")
     code = request.form.get("code", "").strip()
@@ -787,49 +859,65 @@ def delete_code_by_details():
 
 
 @app.post("/codes/<path:code>/update")
-@admin_only
+@management_only
 def update_code(code):
     connection = db(); row = connection.execute("SELECT kind FROM codes WHERE code=?", (code,)).fetchone()
-    connection.execute("UPDATE codes SET code=?, description=?, year=?, annual_budget=?, auditor_budget=? WHERE code=?", (request.form["new_code"].strip(), request.form["description"].strip(), int(request.form.get("year", date.today().year)), request.form.get("annual_budget") or None, request.form.get("auditor_budget") or None, code)); connection.commit(); connection.close()
+    new_code = request.form["new_code"].strip().upper()
+    annual_budget = request.form.get("annual_budget") or None
+    auditor_budget = request.form.get("auditor_budget") or None
+    if new_code.startswith("BR"):
+        annual_budget = auditor_budget = None
+    connection.execute("UPDATE codes SET code=?, description=?, year=?, annual_budget=?, auditor_budget=? WHERE code=?", (new_code, request.form["description"].strip(), int(request.form.get("year", date.today().year)), annual_budget, auditor_budget, code)); connection.commit(); connection.close()
     return redirect(url_for("home", tab="engagements" if row and row["kind"] == "engagement" else "admin"))
 
 
 @app.post("/codes/<path:code>/delete")
-@admin_only
+@management_only
 def delete_code(code):
     connection = db(); row = connection.execute("SELECT kind FROM codes WHERE code=?", (code,)).fetchone(); connection.execute("DELETE FROM codes WHERE code=?", (code,)); connection.commit(); connection.close()
     return redirect(url_for("home", tab="engagements" if row and row["kind"] == "engagement" else "admin"))
 
 
 @app.post("/auditors/<initials>/update")
-@admin_only
+@management_only
 def update_auditor(initials):
     connection = db(); connection.execute("UPDATE auditors SET initials=?, name=? WHERE initials=?", (request.form["new_initials"].strip().upper(), request.form.get("name", "").strip(), initials)); connection.commit(); connection.close()
     return redirect(url_for("home", tab="auditors"))
 
 
 @app.post("/auditors/<initials>/delete")
-@admin_only
+@management_only
 def delete_auditor(initials):
     connection = db(); connection.execute("DELETE FROM auditors WHERE initials=?", (initials,)); connection.commit(); connection.close()
     return redirect(url_for("home", tab="auditors"))
 
 
 def accounts_page():
-    if session.get("role") != "admin": return "Admin access required", 403
+    if not is_manager(): return "Admin access required", 403
     connection = db(); accounts = connection.execute("SELECT username, role, auditor, audit_type FROM accounts ORDER BY username").fetchall()
     type_options = lambda selected: "".join(f"<option value='{value}' {'selected' if selected == value else ''}>{label}</option>" for value, label in AUDIT_TYPE_LABELS.items())
-    rows = "".join(f"<tr><td>{a['username']}</td><td>{a['role']}</td><td>{a['auditor'] or '-'}</td><td>{AUDIT_TYPE_LABELS.get(a['audit_type'], 'IT Audit')}</td><td><form id='account-{a['username']}' class='account-edit' method='post' action='{url_for('update_account', username=a['username'])}'>{csrf_field()}<input name='password' type='password' placeholder='New password'><select name='role'><option {'selected' if a['role'] == 'auditor' else ''}>auditor</option><option {'selected' if a['role'] == 'admin' else ''}>admin</option><input name='auditor' value='{a['auditor']}' placeholder='Auditor'><select name='audit_type'>{type_options(a['audit_type'])}</select></form></td><td><div class='account-actions'><button class='btn' form='account-{a['username']}'>Save</button>{'' if a['username'] == session.get('username') else f"<button class='btn danger' form='account-{a['username']}' formaction='{url_for('delete_account', username=a['username'])}'>Delete</button>"}</div></td></tr>" for a in accounts)
-    content = f"<div class='card'><h2>Accounts</h2><form class='module-form' method='post' action='{url_for('add_account')}'>{csrf_field()}<label>Username<input name='username' placeholder='Username' required></label><label>Password<input name='password' type='password' placeholder='Password' required></label><label>Role<select name='role'><option>auditor</option><option>admin</option></select></label><label>Auditor initials<input name='auditor' placeholder='Auditor initials'></label><label>Audit group<select name='audit_type'>{type_options('it')}</select></label><button class='btn'>Add account</button></form><table class='accounts-table'><tr><th>Username</th><th>Role</th><th>Auditor</th><th>Audit group</th><th>Edit</th><th>Actions</th></tr>{rows}</table></div>"
+    role_options = lambda selected: "".join(f"<option value='{role}' {'selected' if selected == role else ''}>{label}</option>" for role, label in (("auditor", "Auditor"), ("TL", "Team Leader (TL)"), ("admin", "Admin")))
+    account_rows = []
+    for account in accounts:
+        username = account["username"]
+        form_id = f"account-{username}"
+        delete_button = f"<button class='btn danger' form='{form_id}' formaction='{url_for('delete_account', username=username)}'>Delete</button>" if session.get("role") == "admin" and username != session.get("username") else ""
+        account_rows.append(f"<tr><td>{escape(username)}</td><td>{escape(account['role'])}</td><td>{escape(account['auditor'] or '-')}</td><td>{escape(AUDIT_TYPE_LABELS.get(account['audit_type'], 'IT Audit'))}</td><td><form id='{form_id}' class='account-edit' method='post' action='{url_for('update_account', username=username)}'>{csrf_field()}<input name='password' type='password' placeholder='New password'><select name='role'>{role_options(account['role'])}</select><input name='auditor' value='{escape(account['auditor'])}' placeholder='Auditor'><select name='audit_type'>{type_options(account['audit_type'])}</select></form></td><td><div class='account-actions'><button class='btn' form='{form_id}'>Save</button>{delete_button}</div></td></tr>")
+    rows = "".join(account_rows)
+    content = f"<div class='card'><h2>Accounts</h2><form class='module-form' method='post' action='{url_for('add_account')}'>{csrf_field()}<label>Username<input name='username' placeholder='Username' required></label><label>Password<input name='password' type='password' placeholder='Password' required></label><label>Role<select name='role'>{role_options('auditor')}</select></label><label>Auditor initials<input name='auditor' placeholder='Auditor initials'></label><label>Audit group<select name='audit_type'>{type_options('it')}</select></label><button class='btn'>Add account</button></form><table class='accounts-table'><tr><th>Username</th><th>Role</th><th>Auditor</th><th>Audit group</th><th>Edit</th><th>Actions</th></tr>{rows}</table></div>"
     return render(content)
 
 
 @app.post("/accounts")
-@admin_only
+@management_only
 def add_account():
     username = request.form["username"].strip()
     role = request.form["role"]
     auditor = request.form.get("auditor", "").strip().upper()
+    if role not in {"auditor", "admin", "TL"}:
+        return "Invalid account role.", 400
+    if role != "auditor":
+        auditor = ""
     audit_type = request.form.get("audit_type", "it").strip().lower()
     if audit_type not in AUDIT_TYPE_LABELS:
         return "Invalid audit group.", 400
@@ -851,11 +939,16 @@ def add_account():
 
 
 @app.post("/accounts/<username>/update")
-@admin_only
+@management_only
 def update_account(username):
     connection = db(); password = request.form.get("password", "")
     role = request.form["role"]
     auditor = request.form.get("auditor", "").strip().upper()
+    if role not in {"auditor", "admin", "TL"}:
+        connection.close()
+        return "Invalid account role.", 400
+    if role != "auditor":
+        auditor = ""
     audit_type = request.form.get("audit_type", "it").strip().lower()
     if audit_type not in AUDIT_TYPE_LABELS:
         return "Invalid audit group.", 400
