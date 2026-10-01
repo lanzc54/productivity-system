@@ -337,6 +337,7 @@ def init_db():
         CREATE TABLE IF NOT EXISTS entries (auditor TEXT NOT NULL, work_date TEXT NOT NULL, slot TEXT NOT NULL, code TEXT NOT NULL, PRIMARY KEY (auditor, work_date, slot));
         CREATE TABLE IF NOT EXISTS engagement_assignments (code TEXT NOT NULL, year INTEGER NOT NULL, auditor TEXT NOT NULL, budget_md REAL, PRIMARY KEY (code, year, auditor));
         CREATE TABLE IF NOT EXISTS weekly_engagement_assignments (week_start TEXT NOT NULL, auditor TEXT NOT NULL, code TEXT NOT NULL, PRIMARY KEY (week_start, auditor));
+        CREATE TABLE IF NOT EXISTS branch_engagement_assignments (start_date TEXT NOT NULL, end_date TEXT NOT NULL, auditor TEXT NOT NULL, code TEXT NOT NULL, PRIMARY KEY (start_date, end_date, auditor));
         CREATE TABLE IF NOT EXISTS it_engagements (engagement_code TEXT PRIMARY KEY, name TEXT NOT NULL, year INTEGER NOT NULL DEFAULT 2026);
         CREATE TABLE IF NOT EXISTS business_process_engagements (engagement_code TEXT PRIMARY KEY, name TEXT NOT NULL, year INTEGER NOT NULL DEFAULT 2026);
         CREATE TABLE IF NOT EXISTS branch_audit_engagements (engagement_code TEXT PRIMARY KEY, name TEXT NOT NULL, year INTEGER NOT NULL DEFAULT 2026);
@@ -360,6 +361,12 @@ def init_db():
             pass
     connection.execute("UPDATE accounts SET audit_type='it' WHERE audit_type IS NULL OR audit_type NOT IN ('it', 'business', 'branch')")
     connection.execute("UPDATE codes SET annual_budget=NULL, auditor_budget=NULL WHERE kind='engagement' AND code LIKE 'BR%'")
+    for legacy_assignment in connection.execute("SELECT week_start, auditor, code FROM weekly_engagement_assignments").fetchall():
+        legacy_start = date.fromisoformat(legacy_assignment["week_start"])
+        connection.execute(
+            "INSERT INTO branch_engagement_assignments(start_date, end_date, auditor, code) VALUES (?, ?, ?, ?) ON CONFLICT(start_date, end_date, auditor) DO NOTHING",
+            (legacy_start.isoformat(), (legacy_start + timedelta(days=6)).isoformat(), legacy_assignment["auditor"], legacy_assignment["code"]),
+        )
 
     if connection.execute("SELECT COUNT(*) FROM accounts").fetchone()[0] == 0:
         connection.execute("INSERT INTO accounts(username, password_hash, role, auditor, audit_type) VALUES (?, ?, 'admin', '', 'it')", ("admin", password_hash("ChangeMe123!")))
@@ -439,6 +446,16 @@ def is_manager():
     return session.get("role") in MANAGER_ROLES
 
 
+def manager_audit_type(connection):
+    if session.get("role") != "TL":
+        return None
+    account = connection.execute(
+        "SELECT audit_type FROM accounts WHERE username=? AND role='TL'",
+        (session.get("username"),),
+    ).fetchone()
+    return account["audit_type"] if account else None
+
+
 def week_start(value: str | None) -> date:
     selected = date.fromisoformat(value) if value else date.today()
     return selected - timedelta(days=selected.weekday())
@@ -502,7 +519,10 @@ def entry_page():
     assignments = {(row["code"], row["year"], row["auditor"]) for row in connection.execute("SELECT code, year, auditor FROM engagement_assignments").fetchall()}
     selected = account["auditor"] if account else (request.args.get("auditor", "").strip().upper() if is_manager() else "")
     start = week_start(request.args.get("week")); days = [start + timedelta(days=i) for i in range(7)]; slots = [f"{h}-{h+1}" for h in range(6, 24)]
-    weekly_assignments = {(row["code"], row["auditor"]) for row in connection.execute("SELECT code, auditor FROM weekly_engagement_assignments WHERE week_start=?", (days[0].isoformat(),)).fetchall()}
+    branch_assignments = connection.execute(
+        "SELECT code, auditor FROM branch_engagement_assignments WHERE start_date<=? AND end_date>=?",
+        (days[-1].isoformat(), days[0].isoformat()),
+    ).fetchall()
     default_entries = []
     for day in days:
         default_entries.append((selected, day.isoformat(), "12-13", "LBRK-NAPP-0000"))
@@ -517,9 +537,9 @@ def entry_page():
         if code["year"] == days[0].year:
             base_code = engagement_base_code(code["code"])
             if base_code.startswith("BR"):
-                assigned = (base_code, selected) in weekly_assignments
+                assigned = any(row["code"] == base_code and row["auditor"] == selected for row in branch_assignments)
             else:
-                assigned = (base_code, code["year"], selected) in assignments or (base_code, selected) in weekly_assignments
+                assigned = (base_code, code["year"], selected) in assignments
             is_admin_code = code["kind"] == "admin"
             is_engagement_code = code["kind"] in {"engagement", "overtime"}
             if is_admin_code or (is_engagement_code and (is_manager() or assigned)):
@@ -547,13 +567,13 @@ def save_entry():
         base_code = engagement_base_code(code)
         code_kind = connection.execute("SELECT kind FROM codes WHERE code=? AND year=?", (base_code, code_year)).fetchone()
         if code_kind and code_kind["kind"] == "engagement":
-            week = week_start(request.form["work_date"]).isoformat()
             if base_code.startswith("BR"):
-                assigned = connection.execute("SELECT 1 FROM weekly_engagement_assignments WHERE week_start=? AND auditor=? AND code=?", (week, auditor, base_code)).fetchone()
+                assigned = connection.execute(
+                    "SELECT 1 FROM branch_engagement_assignments WHERE start_date<=? AND end_date>=? AND auditor=? AND code=?",
+                    (request.form["work_date"], request.form["work_date"], auditor, base_code),
+                ).fetchone()
             else:
                 assigned = connection.execute("SELECT 1 FROM engagement_assignments WHERE code=? AND year=? AND auditor=?", (base_code, code_year, auditor)).fetchone()
-                if not assigned:
-                    assigned = connection.execute("SELECT 1 FROM weekly_engagement_assignments WHERE week_start=? AND auditor=? AND code=?", (week, auditor, base_code)).fetchone()
             if not assigned:
                 registered = None
     if code and registered: connection.execute("INSERT OR REPLACE INTO entries VALUES (?, ?, ?, ?)", (*params, code))
@@ -569,7 +589,12 @@ def codes_page(tab):
     overtime_rows = connection.execute("SELECT * FROM codes WHERE kind='overtime' ORDER BY code").fetchall() if kind == "engagement" else []
     auditors = connection.execute("SELECT auditor AS initials, username AS name, audit_type FROM accounts WHERE role='auditor' AND auditor <> '' ORDER BY auditor").fetchall() if kind == "engagement" else []
     assignments = connection.execute("SELECT * FROM engagement_assignments ORDER BY year DESC, code, auditor").fetchall() if kind == "engagement" else []
-    weekly_assignments = connection.execute("SELECT * FROM weekly_engagement_assignments ORDER BY week_start DESC, auditor").fetchall() if kind == "engagement" else []
+    branch_assignments = connection.execute("SELECT * FROM branch_engagement_assignments ORDER BY start_date DESC, auditor").fetchall() if kind == "engagement" else []
+    scoped_audit_type = manager_audit_type(connection)
+    if scoped_audit_type:
+        auditors = [auditor for auditor in auditors if auditor["audit_type"] == scoped_audit_type]
+        assignments = [assignment for assignment in assignments if audit_type_for_engagement(assignment["code"]) == scoped_audit_type]
+        branch_assignments = [assignment for assignment in branch_assignments if scoped_audit_type == "branch"]
     title = "Engagement codes" if kind == "engagement" else "Non-engagement codes" if kind == "admin" else "Overtime engagement codes"
     fields = "<th>Code</th><th>Description</th>" + ("<th>Year</th><th>Annual budget MD</th><th>Budgeted MD / auditor</th>" if kind == "engagement" else "<th>Year</th>" if kind == "overtime" else "")
     body = "".join(f"<tr><td>{escape(row['code'])}</td><td>{escape(row['description'])}</td>" + (f"<td>{row['year']}</td><td>{row['annual_budget'] or '-'}</td><td>{row['auditor_budget'] or '-'}</td>" if kind == "engagement" else f"<td>{row['year']}</td>" if kind == "overtime" else "") + "</tr>" for row in rows)
@@ -602,9 +627,13 @@ def codes_page(tab):
         add_form = ""
     overtime_body = "".join(f"<tr><td>{escape(row['code'])}</td><td>{escape(row['description'])}</td><td>{row['year']}</td></tr>" for row in overtime_rows)
     overtime_table = f"<section><h3>Encoded overtime</h3><p class='muted'>Create overtime codes from the form above by selecting an overtime subcode. They appear here and are available in Time Entry.</p><table><tr><th>Code</th><th>Description / particulars</th><th>Year</th></tr>{overtime_body}</table></section>" if kind == "engagement" else ""
-    assignment_form = (f"<form class='module-form' method='post' action='{url_for('assign_engagement')}'>{csrf_field()}<label>Engagement code<input name='code' placeholder='BRSP-NAPP-0000' required></label><label>Week starting<input name='week_start' type='date' value='{week_start(date.today().isoformat()).isoformat()}' required></label><label>Auditor<select name='auditor' required>" + "".join(f"<option value='{a['initials']}'>{a['initials']} {a['name']} ({AUDIT_TYPE_LABELS.get(a['audit_type'], 'IT Audit')})</option>" for a in auditors) + "</select></label><button class='btn'>Assign engagement</button></form><p class='muted'>The assignment applies to the whole week starting on the selected date. Branch auditors can enter only their assigned branch engagement for that week.</p>") if kind == "engagement" and is_manager() else ""
+    annual_auditors = [auditor for auditor in auditors if auditor["audit_type"] in {"it", "business"}]
+    branch_auditors = [auditor for auditor in auditors if auditor["audit_type"] == "branch"]
+    annual_assignment_form = (f"<form class='module-form' method='post' action='{url_for('assign_engagement')}'>{csrf_field()}<label>IT / Business engagement code<input name='code' placeholder='ITPP-NAPP-H001' required></label><label>Year<input name='year' type='number' value='{date.today().year}' required></label><label>Auditor<select name='auditor' required>" + "".join(f"<option value='{a['initials']}'>{a['initials']} {a['name']} ({AUDIT_TYPE_LABELS.get(a['audit_type'], 'IT Audit')})</option>" for a in annual_auditors) + "</select></label><button class='btn'>Assign for year</button></form>") if kind == "engagement" and is_manager() and scoped_audit_type != "branch" and annual_auditors else ""
+    branch_assignment_form = (f"<form class='module-form' method='post' action='{url_for('assign_engagement')}'>{csrf_field()}<label>Branch engagement code<input name='code' placeholder='BRSP-NAPP-0000' required></label><label>Access starts<input name='start_date' type='date' required></label><label>Access ends<input name='end_date' type='date' required></label><label>Branch auditor<select name='auditor' required>" + "".join(f"<option value='{a['initials']}'>{a['initials']} {a['name']}</option>" for a in branch_auditors) + "</select></label><button class='btn'>Assign date range</button></form><p class='muted'>Branch access applies only between the selected start and end dates, inclusive.</p>") if kind == "engagement" and is_manager() and scoped_audit_type in {None, "branch"} and branch_auditors else ""
+    assignment_form = annual_assignment_form + branch_assignment_form
     assignment_body = "".join(f"<tr><td>{escape(row['code'])}</td><td>Year {row['year']}</td><td>{escape(row['auditor'])}</td>" + (f"<td><form method='post' action='{url_for('delete_assignment')}'>{csrf_field()}<input type='hidden' name='code' value='{escape(row['code'])}'><input type='hidden' name='year' value='{row['year']}'><input type='hidden' name='auditor' value='{escape(row['auditor'])}'><button class='btn danger'>Delete</button></form></td>" if is_manager() else "") + "</tr>" for row in assignments)
-    assignment_body += "".join(f"<tr><td>{escape(row['code'])}</td><td>Week of {row['week_start']}</td><td>{escape(row['auditor'])}</td>" + (f"<td><form method='post' action='{url_for('delete_assignment')}'>{csrf_field()}<input type='hidden' name='code' value='{escape(row['code'])}'><input type='hidden' name='week_start' value='{row['week_start']}'><input type='hidden' name='auditor' value='{escape(row['auditor'])}'><button class='btn danger'>Delete</button></form></td>" if is_manager() else "") + "</tr>" for row in weekly_assignments)
+    assignment_body += "".join(f"<tr><td>{escape(row['code'])}</td><td>{row['start_date']} to {row['end_date']}</td><td>{escape(row['auditor'])}</td>" + (f"<td><form method='post' action='{url_for('delete_assignment')}'>{csrf_field()}<input type='hidden' name='code' value='{escape(row['code'])}'><input type='hidden' name='start_date' value='{row['start_date']}'><input type='hidden' name='end_date' value='{row['end_date']}'><input type='hidden' name='auditor' value='{escape(row['auditor'])}'><button class='btn danger'>Delete</button></form></td>" if is_manager() else "") + "</tr>" for row in branch_assignments)
     assignment_actions = "<th>Actions</th>" if is_manager() else ""
     assignment_table = f"<section><h3>Engagement assignments</h3>{assignment_form}<table><tr><th>Engagement code</th><th>Assignment period</th><th>Auditor</th>{assignment_actions}</tr>{assignment_body or '<tr><td colspan=4>No assignments recorded</td></tr>'}</table></section>" if kind == "engagement" else ""
     content = f"<div class='card'><h2>{title}</h2>{add_form}{admin_table}{catalog_sections}{overtime_table}{assignment_table}</div>"
@@ -786,37 +815,74 @@ def add_code():
 @app.post("/assignments")
 @management_only
 def assign_engagement():
-    code = request.form["code"].strip().upper(); auditor = request.form["auditor"].strip().upper()
-    selected_week = request.form.get("week_start", "").strip()
-    if selected_week:
-        try:
-            assignment_date = date.fromisoformat(selected_week)
-        except ValueError:
-            return "Invalid assignment week.", 400
-        year = assignment_date.year
-        assignment_week = week_start(selected_week).isoformat()
-    else:
-        year = int(request.form["year"])
-        assignment_week = None
-    connection = db(); exists = connection.execute("SELECT 1 FROM codes WHERE code=? AND kind='engagement' AND year=?", (code, year)).fetchone()
-    if not exists:
-        connection.close()
-        return "Engagement code must exist in the Engagements table before assignment.", 400
+    code = request.form.get("code", "").strip().upper()
+    auditor = request.form.get("auditor", "").strip().upper()
     required_audit_type = audit_type_for_engagement(code)
+    if not required_audit_type:
+        return "Select a valid engagement code.", 400
+
+    connection = db()
+    manager_group = manager_audit_type(connection)
+    if manager_group and manager_group != required_audit_type:
+        connection.close()
+        return "Team Leaders can assign engagements only for their audit group.", 403
+
     account = connection.execute("SELECT audit_type FROM accounts WHERE role='auditor' AND auditor=?", (auditor,)).fetchone()
-    if required_audit_type and (not account or account["audit_type"] != required_audit_type):
+    if not account or account["audit_type"] != required_audit_type:
         expected_group = AUDIT_TYPE_LABELS[required_audit_type]
         connection.close()
         return f"{code} can only be assigned to an auditor in the {expected_group} account group.", 400
-    if assignment_week:
-        connection.execute("INSERT INTO weekly_engagement_assignments(week_start, auditor, code) VALUES (?, ?, ?) ON CONFLICT(week_start, auditor) DO UPDATE SET code=excluded.code", (assignment_week, auditor, code))
-        connection.commit(); connection.close()
-        return redirect(url_for("home", tab="engagements"))
-    existing = connection.execute("SELECT auditor FROM engagement_assignments WHERE code=? AND year=?", (code, year)).fetchone()
-    if existing and existing["auditor"] != auditor:
-        connection.close()
-        return f"This engagement is already assigned to auditor {existing['auditor']} for {year}.", 409
-    connection.execute("INSERT INTO engagement_assignments(code, year, auditor) VALUES (?, ?, ?) ON CONFLICT(code, year, auditor) DO NOTHING", (code, year, auditor)); connection.commit(); connection.close()
+
+    selected_start = request.form.get("start_date", "").strip()
+    selected_end = request.form.get("end_date", "").strip()
+    if required_audit_type == "branch":
+        if not selected_start or not selected_end:
+            connection.close()
+            return "Branch assignments require both a start date and an end date.", 400
+        try:
+            start_date = date.fromisoformat(selected_start)
+            end_date = date.fromisoformat(selected_end)
+        except ValueError:
+            connection.close()
+            return "Invalid assignment date range.", 400
+        if start_date > end_date:
+            connection.close()
+            return "The assignment end date must be on or after its start date.", 400
+        for assignment_year in range(start_date.year, end_date.year + 1):
+            exists = connection.execute("SELECT 1 FROM codes WHERE code=? AND kind='engagement' AND year=?", (code, assignment_year)).fetchone()
+            if not exists:
+                connection.close()
+                return f"{code} must exist in Engagements for {assignment_year} before assignment.", 400
+        overlapping = connection.execute(
+            "SELECT code, start_date, end_date FROM branch_engagement_assignments WHERE auditor=? AND start_date<=? AND end_date>=? AND NOT (start_date=? AND end_date=?)",
+            (auditor, end_date.isoformat(), start_date.isoformat(), start_date.isoformat(), end_date.isoformat()),
+        ).fetchone()
+        if overlapping:
+            connection.close()
+            return f"This auditor already has {overlapping['code']} assigned from {overlapping['start_date']} to {overlapping['end_date']}.", 409
+        connection.execute(
+            "INSERT INTO branch_engagement_assignments(start_date, end_date, auditor, code) VALUES (?, ?, ?, ?) ON CONFLICT(start_date, end_date, auditor) DO UPDATE SET code=excluded.code",
+            (start_date.isoformat(), end_date.isoformat(), auditor, code),
+        )
+    else:
+        if selected_start or selected_end:
+            connection.close()
+            return "IT and Business Process assignments use a year, not a date range.", 400
+        try:
+            year = int(request.form["year"])
+        except (KeyError, ValueError):
+            connection.close()
+            return "A valid assignment year is required.", 400
+        exists = connection.execute("SELECT 1 FROM codes WHERE code=? AND kind='engagement' AND year=?", (code, year)).fetchone()
+        if not exists:
+            connection.close()
+            return "Engagement code must exist in the Engagements table before assignment.", 400
+        existing = connection.execute("SELECT auditor FROM engagement_assignments WHERE code=? AND year=?", (code, year)).fetchone()
+        if existing and existing["auditor"] != auditor:
+            connection.close()
+            return f"This engagement is already assigned to auditor {existing['auditor']} for {year}.", 409
+        connection.execute("INSERT INTO engagement_assignments(code, year, auditor) VALUES (?, ?, ?) ON CONFLICT(code, year, auditor) DO NOTHING", (code, year, auditor))
+    connection.commit(); connection.close()
     return redirect(url_for("home", tab="engagements"))
 
 
@@ -826,10 +892,19 @@ def delete_assignment():
     code = request.form["code"].strip().upper()
     auditor = request.form["auditor"].strip().upper()
     connection = db()
-    selected_week = request.form.get("week_start", "").strip()
-    if selected_week:
-        connection.execute("DELETE FROM weekly_engagement_assignments WHERE code=? AND week_start=? AND auditor=?", (code, selected_week, auditor))
+    manager_group = manager_audit_type(connection)
+    required_audit_type = audit_type_for_engagement(code)
+    if manager_group and manager_group != required_audit_type:
+        connection.close()
+        return "Team Leaders can manage assignments only for their audit group.", 403
+    selected_start = request.form.get("start_date", "").strip()
+    selected_end = request.form.get("end_date", "").strip()
+    if selected_start and selected_end:
+        connection.execute("DELETE FROM branch_engagement_assignments WHERE code=? AND start_date=? AND end_date=? AND auditor=?", (code, selected_start, selected_end, auditor))
     else:
+        if required_audit_type == "branch":
+            connection.close()
+            return "Branch assignments require their start and end dates.", 400
         year = int(request.form["year"])
         connection.execute("DELETE FROM engagement_assignments WHERE code=? AND year=? AND auditor=?", (code, year, auditor))
     connection.commit()
