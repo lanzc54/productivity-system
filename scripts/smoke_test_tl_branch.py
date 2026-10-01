@@ -77,11 +77,8 @@ assert budgets["annual_budget"] is None and budgets["auditor_budget"] is None, "
 connection.close()
 
 monday = week_start(date.today().isoformat())
-range_start = monday
-range_end = monday + timedelta(days=13)
-start_iso_week = f"{range_start.isocalendar().year}-W{range_start.isocalendar().week:02d}"
-end_week_monday = range_start + timedelta(days=7)
-end_iso_week = f"{end_week_monday.isocalendar().year}-W{end_week_monday.isocalendar().week:02d}"
+range_start = monday + timedelta(days=2)
+range_end = monday + timedelta(days=11)
 connection = db()
 connection.execute("INSERT INTO weekly_engagement_assignments(week_start, auditor, code) VALUES (?, ?, ?)", (monday.isoformat(), "B02", branch_code["code"]))
 connection.commit()
@@ -93,14 +90,15 @@ assert migrated and migrated["start_date"] == monday.isoformat() and migrated["e
 connection.close()
 assignment = post_as("TL", "tl-smoke", "", "/assignments", {
     "code": branch_code["code"],
-    "start_week": start_iso_week,
-    "end_week": end_iso_week,
+    "start_date": range_start.isoformat(),
+    "end_date": range_end.isoformat(),
     "auditor": "B01",
 })
 assert assignment.status_code == 302, assignment.get_data(as_text=True)
 set_session("TL", "tl-smoke")
 branch_manager_page = client.get("/?tab=engagements")
-assert b"name='start_week'" in branch_manager_page.data and b"name='end_week'" in branch_manager_page.data
+assert b"name='start_date'" in branch_manager_page.data and b"name='end_date'" in branch_manager_page.data
+assert b"name='start_week'" not in branch_manager_page.data and b"name='end_week'" not in branch_manager_page.data
 assert b"IT annual assignments" not in branch_manager_page.data and b"Business Process annual assignments" not in branch_manager_page.data
 wrong_group = post_as("TL", "tl-smoke", "", "/assignments", {
     "code": it_code["code"],
@@ -125,7 +123,7 @@ set_session("TL", "tl-it-smoke")
 it_manager_page = client.get("/?tab=engagements")
 assert b"IT annual assignments" in it_manager_page.data
 assert b"Business Process annual assignments" not in it_manager_page.data
-assert b"name='start_week'" not in it_manager_page.data
+assert b"name='start_date'" not in it_manager_page.data
 set_session("TL", "tl-business-smoke")
 business_manager_page = client.get("/?tab=engagements")
 assert b"Business Process annual assignments" in business_manager_page.data
@@ -145,7 +143,7 @@ if len(branch_codes) > 1:
 middle_week_page = client.get(f"/?week={(monday + timedelta(days=7)).isoformat()}")
 assert branch_code["code"].encode() in middle_week_page.data, "The range should grant access in later weeks"
 
-entry_date = monday + timedelta(days=1)
+entry_date = range_start
 entry = post_as("auditor", "branch-smoke", "B01", "/entry", {
     "auditor": "B01",
     "work_date": entry_date.isoformat(),
