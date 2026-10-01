@@ -34,6 +34,16 @@ branch_code = branch_codes[0]
 other_branch_code = branch_codes[1]["code"] if len(branch_codes) > 1 else "BR_UNASSIGNED"
 it_code = connection.execute("SELECT code, year FROM codes WHERE kind='engagement' AND code LIKE 'IT%' ORDER BY code LIMIT 1").fetchone()
 assert it_code, "No IT engagement code was initialized"
+overtime_codes = {
+    "it": "ITRA-OTRD-H001",
+    "business": "BPRA-OTRD-H001",
+    "branch": "BRFA-OTRD-H001",
+}
+for audit_type, code in overtime_codes.items():
+    connection.execute(
+        "INSERT OR REPLACE INTO codes(code, description, kind, year) VALUES (?, ?, 'overtime', ?)",
+        (code, f"{audit_type} overtime smoke code", date.today().year),
+    )
 connection.commit()
 connection.close()
 
@@ -50,6 +60,16 @@ def set_session(role, username, auditor=""):
 def post_as(role, username, auditor, path, data):
     set_session(role, username, auditor)
     return client.post(path, data={**data, "csrf_token": csrf})
+
+
+def assert_scoped_engagement_page(response, expected_catalog, expected_overtime):
+    html = response.get_data(as_text=True)
+    catalog_sections = ("IT engagements", "Business process engagements", "Branch audit engagements")
+    assert expected_catalog in html
+    assert all(section not in html for section in catalog_sections if section != expected_catalog)
+    overtime_table = html.split("<h3>Encoded overtime</h3>", 1)[1].split("</section>", 1)[0]
+    assert expected_overtime in overtime_table
+    assert all(code not in overtime_table for code in overtime_codes.values() if code != expected_overtime)
 
 
 set_session("TL", "tl-smoke")
@@ -100,6 +120,7 @@ branch_manager_page = client.get("/?tab=engagements")
 assert b"name='start_date'" in branch_manager_page.data and b"name='end_date'" in branch_manager_page.data
 assert b"name='start_week'" not in branch_manager_page.data and b"name='end_week'" not in branch_manager_page.data
 assert b"IT annual assignments" not in branch_manager_page.data and b"Business Process annual assignments" not in branch_manager_page.data
+assert_scoped_engagement_page(branch_manager_page, "Branch audit engagements", overtime_codes["branch"])
 wrong_group = post_as("TL", "tl-smoke", "", "/assignments", {
     "code": it_code["code"],
     "year": str(it_code["year"]),
@@ -124,15 +145,19 @@ it_manager_page = client.get("/?tab=engagements")
 assert b"IT annual assignments" in it_manager_page.data
 assert b"Business Process annual assignments" not in it_manager_page.data
 assert b"name='start_date'" not in it_manager_page.data
+assert_scoped_engagement_page(it_manager_page, "IT engagements", overtime_codes["it"])
 set_session("TL", "tl-business-smoke")
 business_manager_page = client.get("/?tab=engagements")
 assert b"Business Process annual assignments" in business_manager_page.data
 assert b"IT annual assignments" not in business_manager_page.data
+assert_scoped_engagement_page(business_manager_page, "Business process engagements", overtime_codes["business"])
 set_session("admin", "admin")
 admin_manager_page = client.get("/?tab=engagements")
 assert b"IT annual assignments" in admin_manager_page.data
 assert b"Business Process annual assignments" in admin_manager_page.data
 assert b"Branch date-range assignments" in admin_manager_page.data
+assert all(section in admin_manager_page.get_data(as_text=True) for section in ("IT engagements", "Business process engagements", "Branch audit engagements"))
+assert all(code in admin_manager_page.get_data(as_text=True) for code in overtime_codes.values())
 
 set_session("auditor", "branch-smoke", "B01")
 week_page = client.get(f"/?week={monday.isoformat()}")

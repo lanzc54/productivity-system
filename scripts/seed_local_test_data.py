@@ -44,6 +44,11 @@ TL_ENGAGEMENTS = {
     "YNA": "BPTL-NAPP-0000",
     "GAB": "BRTL-NAPP-0000",
 }
+TL_OVERTIME_SAMPLES = (
+    ("ITRA-OTRD-H001", "IT restday overtime sample"),
+    ("BPRA-OTRD-H001", "Business Process restday overtime sample"),
+    ("BRFA-OTRD-H001", "Branch restday overtime sample"),
+)
 TL_SHARED_CODE_SAMPLE = (
     "YETTE",
     "ITRA-NAPP-0000",
@@ -227,6 +232,13 @@ def main():
                 "INSERT INTO branch_engagement_assignments(start_date, end_date, auditor, code) VALUES (?, ?, 'TESS', ?) "
                 "ON CONFLICT(start_date, end_date, auditor) DO UPDATE SET code=excluded.code",
                 (start_date, end_date, code),
+            )
+
+        for code, description in TL_OVERTIME_SAMPLES:
+            connection.execute(
+                "INSERT INTO codes(code, description, kind, year) VALUES (?, ?, 'overtime', 2026) "
+                "ON CONFLICT(code, kind, year) DO UPDATE SET description=excluded.description",
+                (code, description),
             )
 
         non_engagement_codes = [

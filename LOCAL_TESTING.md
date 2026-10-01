@@ -47,6 +47,8 @@ On Time Entry, use **Previous week** and **Next week**, or choose any date in **
 
 The app links auditor logins to initials `LANZ`, `TINA`, and `TESS`, and TL logins to separate initials `YETTE`, `YNA`, and `GAB`. TL entries are attributed to those TL initials, not to the auditors.
 
+The Engagements module seed includes one catalog-only encoded-overtime sample per audit group: IT, Business Process, and Branch. These codes have no time entries or budget impact; each TL sees only the overtime code for their group.
+
 ## Seeded Assignments and Expected Totals
 
 - Auditor identities have exactly eight logged hourly slots on every September weekday. TL identities have eight slots per weekday from Sep 3 through Sep 10; YETTE also has eight `ITRA-NAPP-0000` slots on Sep 1 and Sep 2. The app does not enforce this limit on arbitrary manual submissions; the seed dataset follows it.

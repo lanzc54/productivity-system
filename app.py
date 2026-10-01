@@ -643,6 +643,9 @@ def codes_page(tab):
     branch_assignments = connection.execute("SELECT * FROM branch_engagement_assignments ORDER BY start_date DESC, auditor").fetchall() if kind == "engagement" else []
     scoped_audit_type = manager_audit_type(connection)
     if scoped_audit_type:
+        if kind in {"engagement", "overtime"}:
+            rows = [row for row in rows if audit_type_for_engagement(row["code"]) == scoped_audit_type]
+            overtime_rows = [row for row in overtime_rows if audit_type_for_engagement(row["code"]) == scoped_audit_type]
         auditors = [auditor for auditor in auditors if auditor["audit_type"] == scoped_audit_type]
         assignments = [assignment for assignment in assignments if audit_type_for_engagement(assignment["code"]) == scoped_audit_type]
         branch_assignments = [assignment for assignment in branch_assignments if scoped_audit_type == "branch"]
@@ -654,6 +657,11 @@ def codes_page(tab):
     catalog_sections = ""
     if kind == "engagement":
         section_specs = (("IT engagements", "IT"), ("Business process engagements", "BP"), ("Branch audit engagements", "BR"))
+        if scoped_audit_type:
+            section_specs = tuple(
+                spec for spec in section_specs
+                if audit_type_for_engagement(f"{spec[1]}-NAPP-0000") == scoped_audit_type
+            )
         for section_title, prefix in section_specs:
             section_rows = [row for row in rows if row["code"].startswith(prefix)]
             if prefix == "BR":
@@ -677,7 +685,12 @@ def codes_page(tab):
     else:
         add_form = ""
     overtime_body = "".join(f"<tr><td>{escape(row['code'])}</td><td>{escape(row['description'])}</td><td>{row['year']}</td></tr>" for row in overtime_rows)
-    overtime_table = f"<section><h3>Encoded overtime</h3><p class='muted'>Create overtime codes from the form above by selecting an overtime subcode. They appear here and are available in Time Entry.</p><table><tr><th>Code</th><th>Description / particulars</th><th>Year</th></tr>{overtime_body}</table></section>" if kind == "engagement" else ""
+    if kind == "engagement":
+        overtime_empty_state = f"No encoded overtime codes for the {AUDIT_TYPE_LABELS[scoped_audit_type]} group." if scoped_audit_type else "No encoded overtime codes recorded."
+        overtime_body = overtime_body or f"<tr><td colspan='3'>{escape(overtime_empty_state)}</td></tr>"
+        overtime_table = f"<section><h3>Encoded overtime</h3><p class='muted'>Create overtime codes from the form above by selecting an overtime subcode. They appear here and are available in Time Entry.</p><table><tr><th>Code</th><th>Description / particulars</th><th>Year</th></tr>{overtime_body}</table></section>"
+    else:
+        overtime_table = ""
     annual_assignment_forms = []
     if kind == "engagement" and is_manager():
         for audit_type, label, prefix in (("it", "IT", "IT"), ("business", "Business Process", "BP")):
@@ -728,6 +741,9 @@ def monitoring_page():
     connection = db(); year = int(request.args.get("year", date.today().year))
     auditors = connection.execute("SELECT auditor AS initials, username AS name, audit_type FROM accounts WHERE role='auditor' AND auditor <> '' ORDER BY auditor").fetchall()
     visible_auditors = [a for a in auditors if a["initials"] == session.get("auditor")] if session.get("role") == "auditor" else auditors
+    scoped_audit_type = manager_audit_type(connection)
+    if scoped_audit_type:
+        visible_auditors = [auditor for auditor in visible_auditors if auditor["audit_type"] == scoped_audit_type]
     years = [row["year"] for row in connection.execute("SELECT DISTINCT year FROM codes WHERE kind='engagement' ORDER BY year DESC").fetchall()]
     if year not in years: years.append(year)
     codes = connection.execute("SELECT * FROM codes WHERE kind='engagement' AND year=? ORDER BY code", (year,)).fetchall()
@@ -745,6 +761,8 @@ def monitoring_page():
         totals[key] = totals.get(key, 0) + row["md"]
     table_sections = []
     for audit_type, label in AUDIT_TYPE_LABELS.items():
+        if scoped_audit_type and audit_type != scoped_audit_type:
+            continue
         group_auditors = [auditor for auditor in visible_auditors if auditor["audit_type"] == audit_type]
         actual_header = "".join(f"<th>Actual Budget MDs ({auditor['initials']})</th>" for auditor in group_auditors)
         group_rows = []
