@@ -370,7 +370,7 @@ def init_db():
 
     if connection.execute("SELECT COUNT(*) FROM accounts").fetchone()[0] == 0:
         connection.execute("INSERT INTO accounts(username, password_hash, role, auditor, audit_type) VALUES (?, ?, 'admin', '', 'it')", ("admin", password_hash("ChangeMe123!")))
-    connection.execute("DELETE FROM auditors WHERE NOT EXISTS (SELECT 1 FROM accounts WHERE accounts.role='auditor' AND accounts.auditor=auditors.initials)")
+    connection.execute("DELETE FROM auditors WHERE NOT EXISTS (SELECT 1 FROM accounts WHERE accounts.role IN ('auditor', 'TL') AND accounts.auditor=auditors.initials)")
     if connection.execute("SELECT COUNT(*) FROM codes").fetchone()[0] == 0:
         connection.executemany("INSERT INTO codes(code, description, kind, year) VALUES (?, ?, 'engagement', ?)", [(c, d, date.today().year) for c, d in ALL_CATALOG_ENGAGEMENTS])
         connection.executemany("INSERT INTO codes(code, description, kind, year) VALUES (?, ?, 'admin', ?)", [(c, d, date.today().year) for c, d in DEFAULT_ADMIN_CODES])
@@ -476,7 +476,7 @@ def render(content, **context):
     if session.get("role") == "auditor": tabs.append(("report", "Report"))
     if is_manager(): tabs.extend([("report", "Report"), ("accounts", "Accounts")])
     context = {**context, "csrf_token": generate_csrf_token()}
-    rendered_content = "<style>.entry-grid .entry-code-input{width:190px}.entry-grid table{min-width:1500px}.week-navigation>a.btn{margin-bottom:14px}</style>" + render_template_string(content, **context)
+    rendered_content = "<style>.entry-grid .entry-code-input{width:190px}.entry-grid table{min-width:1500px}.week-navigation>a.btn{margin-bottom:14px}.report-grid{min-width:0}.report-grid section{min-width:0}.report-grid table{width:100%;table-layout:fixed}.report-grid th,.report-grid td{white-space:normal;overflow-wrap:anywhere}.non-engagement-report{grid-column:1/-1}.non-engagement-table-wrap{display:flex;justify-content:center;min-width:0;max-width:100%;overflow-x:auto}.non-engagement-table-wrap table{width:100%;max-width:1100px;table-layout:fixed}</style>" + render_template_string(content, **context)
     rendered_content += "<script>document.addEventListener('submit',function(event){if(event.target.action.includes('/entry'))sessionStorage.setItem('timeEntryScroll',String(window.scrollY));});window.addEventListener('load',function(){var scroll=sessionStorage.getItem('timeEntryScroll');if(scroll!==null){window.scrollTo(0,Number(scroll));sessionStorage.removeItem('timeEntryScroll');}});</script>"
     rendered_content += "<script>document.addEventListener('input',function(event){if(event.target.name==='code'&&event.target.form){event.target.form.querySelectorAll('[data-budget-field]').forEach(function(field){field.hidden=event.target.value.trim().toUpperCase().startsWith('BR');});}});</script>"
     return render_template_string(PAGE, content=rendered_content, user=session.get("username"), role=session.get("role", "").title(), tabs=tabs, csrf_token=context["csrf_token"])
@@ -516,7 +516,7 @@ def home():
 
 
 def entry_page():
-    connection = db(); account = connection.execute("SELECT auditor FROM accounts WHERE username=? AND role='auditor'", (session.get("username"),)).fetchone(); auditor_accounts = connection.execute("SELECT auditor, username FROM accounts WHERE role='auditor' AND auditor <> '' ORDER BY auditor").fetchall(); codes = connection.execute("SELECT * FROM codes ORDER BY kind, code").fetchall()
+    connection = db(); account = connection.execute("SELECT auditor FROM accounts WHERE username=? AND role IN ('auditor', 'TL') AND auditor<>''", (session.get("username"),)).fetchone(); auditor_accounts = connection.execute("SELECT auditor, username FROM accounts WHERE role IN ('auditor', 'TL') AND auditor<>'' ORDER BY auditor").fetchall(); codes = connection.execute("SELECT * FROM codes ORDER BY kind, code").fetchall()
     assignments = {(row["code"], row["year"], row["auditor"]) for row in connection.execute("SELECT code, year, auditor FROM engagement_assignments").fetchall()}
     selected = account["auditor"] if account else (request.args.get("auditor", "").strip().upper() if is_manager() else "")
     start = week_start(request.args.get("week")); days = [start + timedelta(days=i) for i in range(7)]; slots = [f"{h}-{h+1}" for h in range(6, 24)]
@@ -743,15 +743,16 @@ def monitoring_page():
     for row in actuals:
         key = (engagement_base_code(row["code"]), row["auditor"])
         totals[key] = totals.get(key, 0) + row["md"]
-    actual_header = "".join(f"<th>Actual Budget MDs ({a['initials']})</th>" for a in visible_auditors)
     table_sections = []
     for audit_type, label in AUDIT_TYPE_LABELS.items():
+        group_auditors = [auditor for auditor in visible_auditors if auditor["audit_type"] == audit_type]
+        actual_header = "".join(f"<th>Actual Budget MDs ({auditor['initials']})</th>" for auditor in group_auditors)
         group_rows = []
         for row in codes:
             if audit_type_for_engagement(row["code"]) != audit_type:
                 continue
-            actual_cells = "".join(f"<td>{totals.get((row['code'], a['initials']), 0):.3f}</td>" for a in visible_auditors)
-            total_actual = sum(totals.get((row["code"], a["initials"]), 0) for a in visible_auditors)
+            actual_cells = "".join(f"<td>{totals.get((row['code'], auditor['initials']), 0):.3f}</td>" for auditor in group_auditors)
+            total_actual = sum(totals.get((row["code"], auditor["initials"]), 0) for auditor in group_auditors)
             if audit_type == "branch":
                 group_rows.append(f"<tr><td>{row['code']}</td><td>{row['description']}</td>{actual_cells}<td>{total_actual:.3f}</td></tr>")
             else:
@@ -766,7 +767,7 @@ def monitoring_page():
     admin_header = "".join(f"<th>{a['initials']} MD used</th>" for a in visible_auditors)
     admin_body = "".join("<tr><td>{}</td><td>{}</td>{}<td>{:.3f}</td></tr>".format(row["code"], row["description"], "".join(f"<td>{totals.get((row['code'], a['initials']), 0):.3f}</td>" for a in visible_auditors), sum(totals.get((row["code"], a["initials"]), 0) for a in visible_auditors)) for row in admin_codes)
     year_picker = "<form method='get' class='module-form'><input type='hidden' name='tab' value='monitoring'><label>Year<select name='year' onchange='this.form.submit()'>" + "".join(f"<option value='{option}' {'selected' if option == year else ''}>{option}</option>" for option in sorted(years, reverse=True)) + "</select></label></form>"
-    variance_description = "Variance = Budgeted MD / auditor - your actual MD." if session.get("role") == "auditor" else "Variance = Budgeted MD / auditor - total actual MD across auditors."
+    variance_description = "Variance = Budgeted MD / auditor - your actual MD." if session.get("role") == "auditor" else "Variance = Budgeted MD / auditor - total actual MD across auditors in that audit group."
     content = f"<div class='card'><h2>Monitoring</h2>{year_picker}<p class='muted'>{variance_description}</p>{''.join(table_sections)}</div><div class='card'><h2>Engagement usage</h2><p class='muted'>Time entered against leave, lunch, training, meetings, and other non-budgeted codes.</p><div class='grid'><table><tr><th>Code</th><th>Description</th>{admin_header}<th>Total MD used</th></tr>{admin_body}</table></div></div>"
     return render(content)
 
@@ -795,10 +796,16 @@ def report_page():
         start_date, end_date = end_date, start_date
 
     prefix_map = {"it": "IT", "business": "BP", "branch": "BR"}
+    if current_account["role"] == "TL":
+        account_role_filter = "(role='auditor' OR (role='TL' AND username=?))"
+        account_params = (session.get("username"), audit_type)
+    else:
+        account_role_filter = "role IN ('auditor', 'TL')"
+        account_params = (audit_type,)
     auditors = connection.execute(
         "SELECT auditor AS initials, username AS name, audit_type FROM accounts "
-        "WHERE role='auditor' AND auditor<>'' AND audit_type=? ORDER BY auditor",
-        (audit_type,),
+        f"WHERE {account_role_filter} AND auditor<>'' AND audit_type=? ORDER BY auditor",
+        account_params,
     ).fetchall()
     selected_auditor = request.args.get("auditor", "").strip().upper()
     if current_account["role"] == "auditor":
@@ -814,6 +821,9 @@ def report_page():
     if selected_auditor:
         query += " AND auditor=?"
         params.append(selected_auditor)
+    if current_account["role"] == "TL":
+        query += " AND auditor IN (SELECT auditor FROM accounts WHERE audit_type=? AND auditor<>'' AND (role='auditor' OR (role='TL' AND username=?)))"
+        params.extend((audit_type, session.get("username")))
     if audit_type == "branch":
         query += " AND (code LIKE 'BR%' OR code IN (SELECT code FROM codes WHERE kind='admin'))"
     elif prefix:
@@ -826,11 +836,14 @@ def report_page():
     engagement_totals = {row["initials"]: 0 for row in visible_auditors}
     non_engagement_totals = {row["initials"]: 0 for row in visible_auditors}
     code_totals = {}
+    code_auditor_totals = {}
     for row in usage_rows:
         totals[row["auditor"]] = totals.get(row["auditor"], 0) + row["md"]
         target = engagement_totals if row["code"] in engagement_codes else non_engagement_totals
         target[row["auditor"]] = target.get(row["auditor"], 0) + row["md"]
         code_totals[row["code"]] = code_totals.get(row["code"], 0) + row["md"]
+        key = (row["code"], row["auditor"])
+        code_auditor_totals[key] = code_auditor_totals.get(key, 0) + row["md"]
     max_component = max(
         max(engagement_totals.values(), default=0),
         max(non_engagement_totals.values(), default=0),
@@ -855,12 +868,37 @@ def report_page():
     chart_rows = "".join(f"<tr><td>{escape(row['initials'])}</td><td>{escape(row['name'] or '-')}</td><td>{escape(AUDIT_TYPE_LABELS.get(row['audit_type'], 'IT Audit'))}</td><td>{totals.get(row['initials'], 0):.3f}</td></tr>" for row in visible_auditors)
     code_breakdown = "".join(f"<tr><td>{escape(code)}</td><td>{escape(next((row['description'] for row in code_rows if row['code'] == code), '-'))}</td><td>{value:.3f}</td></tr>" for code, value in sorted(code_totals.items()) if code in engagement_codes)
     non_engagement_breakdown = "".join(f"<tr><td>{escape(code)}</td><td>{escape(next((row['description'] for row in code_rows if row['code'] == code), '-'))}</td><td>{value:.3f}</td></tr>" for code, value in sorted(code_totals.items()) if code not in engagement_codes)
+    code_auditor_rows = sorted(
+        ((code, auditor, value) for (code, auditor), value in code_auditor_totals.items()),
+        key=lambda item: (item[1], item[0]),
+    )
+    code_chart_height = max(180, len(code_auditor_rows) * 36 + 40)
+    max_code_total = max((value for _, _, value in code_auditor_rows), default=0)
+    code_chart_bars = []
+    for index, (code, auditor, value) in enumerate(code_auditor_rows):
+        y = 16 + index * 36
+        bar_width = 680 * value / max_code_total if max_code_total else 0
+        color = "#087f71" if code in engagement_codes else "#e56d50"
+        code_chart_bars.append(
+            f"<text x='16' y='{y + 15}' class='chart-label'>{escape(code)} · {escape(auditor)}</text>"
+            f"<rect x='300' y='{y}' width='{bar_width:.1f}' height='22' fill='{color}'>"
+            f"<title>{escape(code)} · {escape(auditor)}: {value:.3f} MD</title></rect>"
+            f"<text x='1058' y='{y + 15}' text-anchor='end' class='chart-value'>{value:.3f}</text>"
+        )
+    code_auditor_chart = (
+        f"<svg class='report-chart code-report-chart' style='height:{code_chart_height}px;min-height:0' "
+        f"viewBox='0 0 1080 {code_chart_height}' role='img' aria-label='Man-days by time-entry code and auditor'>"
+        f"{''.join(code_chart_bars) if code_chart_bars else '<text x=\"540\" y=\"90\" text-anchor=\"middle\" class=\"chart-empty\">No code usage in this date range</text>'}</svg>"
+        "<div style='display:flex;gap:18px;justify-content:center;font-size:12px;color:var(--ink-soft)'>"
+        "<span><i style='display:inline-block;width:11px;height:11px;background:#087f71;margin-right:6px'></i>Engagement code</span>"
+        "<span><i style='display:inline-block;width:11px;height:11px;background:#e56d50;margin-right:6px'></i>Non-engagement code</span></div>"
+    )
     auditor_options = "".join(f"<option value='{escape(row['initials'])}' {'selected' if selected_auditor == row['initials'] else ''}>{escape(row['initials'])} ({escape(row['name'])})</option>" for row in auditors)
     group_label = AUDIT_TYPE_LABELS[audit_type]
     auditor_filter = f"<label>Auditor<select name='auditor' disabled><option selected>{escape(current_account['auditor'])}</option></select></label>" if current_account["role"] == "auditor" else f"<label>Auditor<select name='auditor'><option value=''>All {escape(group_label)} auditors</option>{auditor_options}</select></label>"
     filter_form = f"<form method='get' class='module-form'><input type='hidden' name='tab' value='report'>{auditor_filter}<label>Audit group<input value='{escape(group_label)}' readonly></label><label>Start date<input type='date' name='start' value='{start_date.isoformat()}' required></label><label>End date<input type='date' name='end' value='{end_date.isoformat()}' required></label><button class='btn'>Generate report</button></form>"
-    non_engagement_section = f"<h3>Non-engagement usage</h3><table><tr><th>Code</th><th>Description</th><th>Total MD</th></tr>{non_engagement_breakdown or '<tr><td colspan=3>No non-engagement usage recorded</td></tr>'}</table>"
-    content = f"<div class='card'><h2>{escape(group_label)} usage report</h2><p class='muted'>Engagement and non-engagement man-days for the selected date range. This report is limited to the signed-in account's audit group.</p>{filter_form}<div class='report-chart-wrap'>{chart}</div><div class='report-grid'><section><h3>Usage by auditor</h3><table><tr><th>Auditor</th><th>Name</th><th>Auditor group</th><th>Total MD</th></tr>{chart_rows}</table></section><section><h3>Engagement usage</h3><table><tr><th>Code</th><th>Engagement</th><th>Total MD</th></tr>{code_breakdown or '<tr><td colspan=3>No engagement usage recorded</td></tr>'}</table>{non_engagement_section}</section></div></div>"
+    non_engagement_section = f"<section class='non-engagement-report'><h3>Non-engagement usage</h3><div class='non-engagement-table-wrap'><table><tr><th>Code</th><th>Description</th><th>Total MD</th></tr>{non_engagement_breakdown or '<tr><td colspan=3>No non-engagement usage recorded</td></tr>'}</table></div></section>"
+    content = f"<div class='card'><h2>{escape(group_label)} usage report</h2><p class='muted'>Engagement and non-engagement man-days for the selected date range. This report is limited to the signed-in account's audit group.</p>{filter_form}<div class='report-chart-wrap'>{chart}</div><div class='report-chart-wrap'><h3>Time entries by code and auditor</h3>{code_auditor_chart}</div><div class='report-grid'><section><h3>Usage by auditor</h3><table><tr><th>Auditor</th><th>Name</th><th>Auditor group</th><th>Total MD</th></tr>{chart_rows}</table></section><section><h3>Engagement usage</h3><table><tr><th>Code</th><th>Engagement</th><th>Total MD</th></tr>{code_breakdown or '<tr><td colspan=3>No engagement usage recorded</td></tr>'}</table></section>{non_engagement_section}</div></div>"
     connection.close()
     return render(content)
 
@@ -1085,9 +1123,9 @@ def accounts_page():
         username = account["username"]
         form_id = f"account-{username}"
         delete_button = f"<button class='btn danger' form='{form_id}' formaction='{url_for('delete_account', username=username)}'>Delete</button>" if session.get("role") == "admin" and username != session.get("username") else ""
-        account_rows.append(f"<tr><td>{escape(username)}</td><td>{escape(account['role'])}</td><td>{escape(account['auditor'] or '-')}</td><td>{escape(AUDIT_TYPE_LABELS.get(account['audit_type'], 'IT Audit'))}</td><td><form id='{form_id}' class='account-edit' method='post' action='{url_for('update_account', username=username)}'>{csrf_field()}<input name='password' type='password' placeholder='New password'><select name='role'>{role_options(account['role'])}</select><input name='auditor' value='{escape(account['auditor'])}' placeholder='Auditor'><select name='audit_type'>{type_options(account['audit_type'])}</select></form></td><td><div class='account-actions'><button class='btn' form='{form_id}'>Save</button>{delete_button}</div></td></tr>")
+        account_rows.append(f"<tr><td>{escape(username)}</td><td>{escape(account['role'])}</td><td>{escape(account['auditor'] or '-')}</td><td>{escape(AUDIT_TYPE_LABELS.get(account['audit_type'], 'IT Audit'))}</td><td><form id='{form_id}' class='account-edit' method='post' action='{url_for('update_account', username=username)}'>{csrf_field()}<input name='password' type='password' placeholder='New password'><select name='role'>{role_options(account['role'])}</select><input name='auditor' value='{escape(account['auditor'])}' placeholder='Auditor / TL initials'><select name='audit_type'>{type_options(account['audit_type'])}</select></form></td><td><div class='account-actions'><button class='btn' form='{form_id}'>Save</button>{delete_button}</div></td></tr>")
     rows = "".join(account_rows)
-    content = f"<div class='card'><h2>Accounts</h2><form class='module-form' method='post' action='{url_for('add_account')}'>{csrf_field()}<label>Username<input name='username' placeholder='Username' required></label><label>Password<input name='password' type='password' placeholder='Password' required></label><label>Role<select name='role'>{role_options('auditor')}</select></label><label>Auditor initials<input name='auditor' placeholder='Auditor initials'></label><label>Audit group<select name='audit_type'>{type_options('it')}</select></label><button class='btn'>Add account</button></form><table class='accounts-table'><tr><th>Username</th><th>Role</th><th>Auditor</th><th>Audit group</th><th>Edit</th><th>Actions</th></tr>{rows}</table></div>"
+    content = f"<div class='card'><h2>Accounts</h2><form class='module-form' method='post' action='{url_for('add_account')}'>{csrf_field()}<label>Username<input name='username' placeholder='Username' required></label><label>Password<input name='password' type='password' placeholder='Password' required></label><label>Role<select name='role'>{role_options('auditor')}</select></label><label>Auditor / TL initials<input name='auditor' placeholder='Auditor / TL initials'></label><label>Audit group<select name='audit_type'>{type_options('it')}</select></label><button class='btn'>Add account</button></form><table class='accounts-table'><tr><th>Username</th><th>Role</th><th>Auditor / TL initials</th><th>Audit group</th><th>Edit</th><th>Actions</th></tr>{rows}</table></div>"
     return render(content)
 
 
@@ -1099,7 +1137,7 @@ def add_account():
     auditor = request.form.get("auditor", "").strip().upper()
     if role not in {"auditor", "admin", "TL"}:
         return "Invalid account role.", 400
-    if role != "auditor":
+    if role not in {"auditor", "TL"}:
         auditor = ""
     audit_type = request.form.get("audit_type", "it").strip().lower()
     if audit_type not in AUDIT_TYPE_LABELS:
@@ -1108,14 +1146,14 @@ def add_account():
     if role == "auditor" and not auditor:
         connection.close()
         return "Auditor accounts must be linked to auditor initials.", 400
-    if role == "auditor" and auditor:
-        existing_auditor_account = connection.execute("SELECT username FROM accounts WHERE role='auditor' AND auditor=?", (auditor,)).fetchone()
+    if role in {"auditor", "TL"} and auditor:
+        existing_auditor_account = connection.execute("SELECT username FROM accounts WHERE role IN ('auditor', 'TL') AND auditor=?", (auditor,)).fetchone()
         if existing_auditor_account:
             connection.close()
-            return f"Auditor initials {auditor} are already linked to account {existing_auditor_account['username']}.", 409
+            return f"Initials {auditor} are already linked to account {existing_auditor_account['username']}.", 409
     connection.execute("INSERT INTO accounts(username, password_hash, role, auditor, audit_type) VALUES (?, ?, ?, ?, ?)", (username, password_hash(request.form["password"]), role, auditor, audit_type))
-    if role == "auditor" and auditor:
-        connection.execute("INSERT INTO auditors(initials, name, audit_type) VALUES (?, '', ?) ON CONFLICT(initials) DO UPDATE SET audit_type=excluded.audit_type", (auditor, audit_type))
+    if role in {"auditor", "TL"} and auditor:
+        connection.execute("INSERT INTO auditors(initials, name, audit_type) VALUES (?, ?, ?) ON CONFLICT(initials) DO UPDATE SET name=excluded.name, audit_type=excluded.audit_type", (auditor, username, audit_type))
     connection.commit()
     connection.close()
     return redirect(url_for("home", tab="accounts"))
@@ -1130,7 +1168,7 @@ def update_account(username):
     if role not in {"auditor", "admin", "TL"}:
         connection.close()
         return "Invalid account role.", 400
-    if role != "auditor":
+    if role not in {"auditor", "TL"}:
         auditor = ""
     audit_type = request.form.get("audit_type", "it").strip().lower()
     if audit_type not in AUDIT_TYPE_LABELS:
@@ -1138,10 +1176,15 @@ def update_account(username):
     if role == "auditor" and not auditor:
         connection.close()
         return "Auditor accounts must be linked to auditor initials.", 400
+    if role in {"auditor", "TL"} and auditor:
+        existing_auditor_account = connection.execute("SELECT username FROM accounts WHERE role IN ('auditor', 'TL') AND auditor=? AND username<>?", (auditor, username)).fetchone()
+        if existing_auditor_account:
+            connection.close()
+            return f"Initials {auditor} are already linked to account {existing_auditor_account['username']}.", 409
     if password: connection.execute("UPDATE accounts SET password_hash=? WHERE username=?", (password_hash(password), username))
     connection.execute("UPDATE accounts SET role=?, auditor=?, audit_type=? WHERE username=?", (role, auditor, audit_type, username))
-    if role == "auditor" and auditor:
-        connection.execute("INSERT INTO auditors(initials, name, audit_type) VALUES (?, '', ?) ON CONFLICT(initials) DO UPDATE SET audit_type=excluded.audit_type", (auditor, audit_type))
+    if role in {"auditor", "TL"} and auditor:
+        connection.execute("INSERT INTO auditors(initials, name, audit_type) VALUES (?, ?, ?) ON CONFLICT(initials) DO UPDATE SET name=excluded.name, audit_type=excluded.audit_type", (auditor, username, audit_type))
     connection.commit(); connection.close()
     return redirect(url_for("home", tab="accounts"))
 

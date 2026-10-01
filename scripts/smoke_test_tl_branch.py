@@ -182,16 +182,36 @@ assert connection.execute("SELECT 1 FROM entries WHERE auditor=? AND work_date=?
 non_engagement = connection.execute("SELECT code FROM codes WHERE kind='admin' AND code NOT IN (?, ?) LIMIT 1", ("RDAY-NAPP-0000", "LBRK-NAPP-0000")).fetchone()
 if non_engagement:
     connection.execute("INSERT OR REPLACE INTO entries(auditor, work_date, slot, code) VALUES (?, ?, ?, ?)", ("B01", entry_date.isoformat(), "7-8", non_engagement["code"]))
+connection.execute("INSERT INTO accounts(username, password_hash, role, auditor, audit_type) VALUES (?, ?, 'TL', ?, 'branch')", ("tl-report-identity", password_hash("test"), "BTL"))
+connection.execute("INSERT INTO accounts(username, password_hash, role, auditor, audit_type) VALUES (?, ?, 'TL', ?, 'branch')", ("tl-report-other", password_hash("test"), "OTL"))
+connection.execute("INSERT INTO entries(auditor, work_date, slot, code) VALUES (?, ?, ?, ?)", ("BTL", entry_date.isoformat(), "10-11", branch_code["code"]))
+connection.execute("INSERT INTO entries(auditor, work_date, slot, code) VALUES (?, ?, ?, ?)", ("OTL", entry_date.isoformat(), "10-11", branch_code["code"]))
 connection.commit()
 connection.close()
 
-set_session("TL", "tl-smoke")
-report = client.get(f"/?tab=report&auditor=B01&start={entry_date.isoformat()}&end={entry_date.isoformat()}")
+set_session("TL", "tl-report-identity", "BTL")
+report = client.get(f"/?tab=report&start={entry_date.isoformat()}&end={entry_date.isoformat()}")
 report_html = report.get_data(as_text=True)
 assert report.status_code == 200
 assert branch_code["code"].encode() in report.data
+code_chart = report_html.split("aria-label='Man-days by time-entry code and auditor'>", 1)[1].split("</svg>", 1)[0]
+assert f"{branch_code['code']} · B01" in code_chart, "TL report should show same-group auditor entries"
+assert f"{branch_code['code']} · BTL" in code_chart, "TL report should show the signed-in TL's own entries"
+assert "OTL" not in code_chart, "TL report must exclude other TL entries"
 if non_engagement:
-    assert non_engagement["code"].encode() not in report.data, "Branch report must exclude non-engagement codes"
+    assert non_engagement["code"].encode() in report.data, "Branch report should include non-engagement usage"
+    assert f"{non_engagement['code']} · B01" in code_chart, "TL report should include same-group auditor non-engagement entries"
+    assert b"non-engagement-report" in report.data, "Non-engagement usage table should render as a full-width report section"
+
+set_session("admin", "admin")
+monitoring = client.get("/?tab=monitoring")
+monitoring_html = monitoring.get_data(as_text=True)
+it_section = monitoring_html.split("<section><h3>IT Audit</h3>", 1)[1].split("</section>", 1)[0]
+business_section = monitoring_html.split("<section><h3>Business Process</h3>", 1)[1].split("</section>", 1)[0]
+branch_section = monitoring_html.split("<section><h3>Branch Audit</h3>", 1)[1].split("</section>", 1)[0]
+assert "I01" in it_section and "P01" not in it_section and "B01" not in it_section, "IT monitoring should show only IT auditor columns"
+assert "P01" in business_section and "I01" not in business_section and "B01" not in business_section, "Business Process monitoring should show only Business Process auditor columns"
+assert "B01" in branch_section and "I01" not in branch_section and "P01" not in branch_section, "Branch monitoring should show only Branch auditor columns"
 
 admin_delete = post_as("admin", "admin", "", "/accounts/tl-created/delete", {})
 assert admin_delete.status_code == 302, admin_delete.status_code
